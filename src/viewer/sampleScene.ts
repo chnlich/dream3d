@@ -10,8 +10,9 @@ export const sampleScene: SceneState = {
     {
       id: "marine",
       label: "Terran Marine",
-      meshyPrompt: "",
-      approxSize: [0.9, 2.0, 0.9],
+      meshyPrompt:
+        "bulky armored humanoid soldier in heavy powered exosuit, full enclosed helmet, thick shoulder pauldrons, both hands gripping a short chunky rifle, standing upright",
+      approxSize: [1.21, 2.0, 1.02],
       transform: { position: [-1.8, 0, 0.5], rotationYDeg: 25, scale: 1 },
       glbUrl: "/sample-assets/marine.glb",
       status: "ready",
@@ -19,8 +20,9 @@ export const sampleScene: SceneState = {
     {
       id: "zergling",
       label: "Zerg Zergling",
-      meshyPrompt: "",
-      approxSize: [1.4, 1.0, 1.8],
+      meshyPrompt:
+        "small fast four-legged carapaced alien beast, two scythe-like clawed forelimbs, low crouched predatory posture, segmented chitin plates",
+      approxSize: [1.96, 1.0, 1.87],
       transform: { position: [1.5, 0, -0.5], rotationYDeg: -120, scale: 1 },
       glbUrl: "/sample-assets/zergling.glb",
       status: "ready",
@@ -28,7 +30,8 @@ export const sampleScene: SceneState = {
     {
       id: "hydralisk",
       label: "Zerg Hydralisk",
-      meshyPrompt: "",
+      meshyPrompt:
+        "tall serpentine alien creature with an armored hooded head, upright cobra-like raised torso, a pair of large bladed scythe forelimbs, segmented carapace",
       approxSize: [1.6, 2.6, 1.6],
       transform: { position: [0.2, 0, -2.0], rotationYDeg: 180, scale: 1 },
       glbUrl: "/sample-assets/hydralisk.glb",

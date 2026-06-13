@@ -13,6 +13,7 @@ import { claudeVisionCritic } from "./claudeVisionCritic";
 import { launchBrowser, type RenderInput } from "../render/headless";
 import { captureViews } from "../render/multiangle/index";
 import { criticCameras } from "../render/criticCameras";
+import { deriveResponseKey, readCachedResponse, writeCachedResponse } from "./responseCache";
 
 // The agentic loop: plan -> assets -> layout -> [render -> geometry + vision ->
 // fix] x amendRounds. The response always carries amendRounds + 1 passes (the
@@ -42,12 +43,42 @@ function implsFor(mode: Mode): Impls {
   return { planner: mockPlanner, assetProvider: mockAssetProvider, visionCritic: mockVisionCritic };
 }
 
-// `onEvent` is optional and defaults to a no-op (undefined), so existing callers are byte-identical;
-// the server passes one to stream progress into a pollable job log.
+// Cache-aware entry point (unchanged signature). In REAL mode an identical request —
+// same prompt + amendRounds + mode — is served from the on-disk response cache: the
+// first run is live (minutes), every repeat is sub-second and spends ZERO Meshy
+// credits. MOCK mode is already instant, so it always runs fresh (memoizing it would
+// be a dev footgun). DREAM3D_RESPONSE_CACHE=0 bypasses the cache entirely (both read
+// and write). `onEvent` streams progress on a live run; a cache HIT returns instantly
+// and emits no events — the server completes the job on promise resolution, not on a
+// terminal event, so an empty progress log is correct.
 export async function generate(
   prompt: string,
   amendRounds: number,
   mode: Mode = resolveMode(),
+  onEvent?: (ev: ProgressEvent) => void,
+): Promise<GenerateResponse> {
+  const useCache = mode === "real" && process.env.DREAM3D_RESPONSE_CACHE !== "0";
+  if (useCache) {
+    const key = deriveResponseKey(prompt, amendRounds, mode);
+    const cached = readCachedResponse(key);
+    if (cached) {
+      console.log(`[dream3d] response cache HIT ${key} (mode=${mode}, amendRounds=${amendRounds})`);
+      return cached;
+    }
+    const result = await runPipeline(prompt, amendRounds, mode, onEvent);
+    writeCachedResponse(key, { prompt, amendRounds, mode }, result);
+    return result;
+  }
+  return runPipeline(prompt, amendRounds, mode, onEvent);
+}
+
+// The live pipeline — formerly the body of generate(), moved verbatim. mode is passed
+// explicitly (the cache gate already resolved it) and onEvent is threaded straight
+// through so a live run still streams progress.
+async function runPipeline(
+  prompt: string,
+  amendRounds: number,
+  mode: Mode,
   onEvent?: (ev: ProgressEvent) => void,
 ): Promise<GenerateResponse> {
   const { planner, assetProvider, visionCritic } = implsFor(mode);

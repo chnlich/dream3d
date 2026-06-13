@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { apiPlugin } from "./src/server/apiPlugin";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
@@ -22,7 +23,7 @@ function apiStubPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [apiStubPlugin()],
+  plugins: [apiPlugin(), apiStubPlugin()],
   build: {
     // Match tsconfig target (ES2022) so viewerMain.ts's top-level await transpiles cleanly.
     target: "es2022",

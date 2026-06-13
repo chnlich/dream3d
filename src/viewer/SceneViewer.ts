@@ -9,12 +9,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { Room, SceneObject, SceneState, Vec3 } from "../scene/schema";
 import {
   addLights,
   addRoom,
+  applyAtmosphere,
   defaultCameraFraming,
-  CLEAR_COLOR,
   CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_FAR,
@@ -36,10 +37,23 @@ export class SceneViewer {
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // ACES filmic tone mapping rolls the PBR highlights into a cinematic range (the slight exposure
+    // bump keeps the dark palette from crushing to black); soft shadow maps let the key light cast.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(CLEAR_COLOR);
+    // Fog + dark background — the shared battlefield atmosphere, and the scene's only background.
+    applyAtmosphere(this.scene);
+    // Image-based lighting: a PMREM-prefiltered RoomEnvironment gives the textured PBR materials
+    // (metallic/roughness/normal) something to reflect — the single biggest lift from flat to lit.
+    // RoomEnvironment is a static box, so generate the env map once here and dispose the generator.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(this.renderer), 0.04).texture;
+    pmrem.dispose();
 
     // FOV / near / far come from the shared visual recipe. Aspect is corrected on first resize.
     this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
@@ -71,7 +85,11 @@ export class SceneViewer {
     // them in declared order. Promise.all rejects on the first failed ready-GLB load (fail loud).
     const loader = new GLTFLoader();
     const nodes = await Promise.all(scene.objects.map((obj) => this.buildObjectNode(obj, loader)));
-    scene.objects.forEach((obj, i) => root.add(this.normalizeAndPlace(nodes[i], obj)));
+    scene.objects.forEach((obj, i) => {
+      const placed = this.normalizeAndPlace(nodes[i], obj);
+      this.enableShadows(placed);
+      root.add(placed);
+    });
 
     this.scene.add(root);
     this.contentRoot = root;
@@ -222,5 +240,16 @@ export class SceneViewer {
       if (value instanceof THREE.Texture) value.dispose();
     }
     material.dispose();
+  }
+
+  // Let every mesh under a placed node both cast and receive shadows, so the units drop shadows onto
+  // the floor and onto each other. Called from loadScene's object-add path; kept separate from
+  // normalizeAndPlace so the placement/scaling math there stays untouched.
+  private enableShadows(root: THREE.Object3D): void {
+    root.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
+    });
   }
 }

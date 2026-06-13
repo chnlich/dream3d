@@ -3,7 +3,7 @@
 // the "./sceneVisuals.js" import to these declarations. Kept in lockstep with
 // sceneVisuals.js by hand.
 
-import type { Object3D } from "three";
+import type { Object3D, Scene } from "three";
 
 /** Room dimensions in world units (X / Z / Y). Structurally matches scene/schema Room. */
 export interface RoomDims {
@@ -26,3 +26,6 @@ export const CAMERA_FAR: number;
 export function addLights(target: Object3D): void;
 export function addRoom(target: Object3D, room: RoomDims): void;
 export function defaultCameraFraming(room: RoomDims): CameraFraming;
+
+/** Set Scene-level fog + background (the shared battlefield atmosphere). Client-viewer use. */
+export function applyAtmosphere(scene: Scene): void;

@@ -5,16 +5,23 @@ import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { generate } from "../pipeline/orchestrator";
 import { publishSceneAssets } from "./assetBridge";
+import type { JobStatus, ProgressEvent } from "../api/contract";
 
 // Vite dev-middleware plugin for the dream3d backend:
-//   POST /api/generate { prompt, amendRounds }  -> { passes } (runs the orchestrator)
-//   GET  /assets/<id>.glb                       -> static GLB from dataDir/assets
+//   POST /api/generate         { prompt, amendRounds } -> 202 { jobId } (starts a background run)
+//   GET  /api/generate/<jobId>                         -> 200 JobStatus (poll for progress + result)
+//   GET  /assets/<id>.glb                              -> static GLB from dataDir/assets
 //
 // dataDir follows the convention shared with scripts/meshy-generate.mjs
 // (~/.cache/dream3d). The orchestrator defaults to MOCK mode, so this works
 // offline with no keys.
 const dataDir = join(homedir(), ".cache", "dream3d");
 const assetsDir = join(dataDir, "assets");
+
+// A generate run is minute-scale in real mode, so POST starts it in the background and returns a
+// jobId; the client polls for the streaming log + final result. Single Node process => a
+// module-level in-memory Map is the whole job store (no persistence needed for the dev server).
+const jobs = new Map<string, JobStatus>();
 
 export function apiPlugin(): Plugin {
   return {
@@ -30,27 +37,93 @@ export function apiPlugin(): Plugin {
   };
 }
 
+// Routes within the existing "/api/generate" prefix mount by method + remainder url (Vite strips the
+// mount path, so req.url is "/" for the bare path and "/<jobId>" for a subpath):
+//   POST "/"        -> start a job, respond 202 { jobId }
+//   GET  "/<jobId>" -> respond 200 JobStatus (404 if the id is unknown)
 async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method !== "POST") {
-    sendJson(res, 405, { error: "method not allowed; use POST" });
+  const url = (req.url ?? "/").split("?")[0];
+
+  if (req.method === "GET") {
+    const jobId = url.replace(/^\//, "");
+    if (jobId.length === 0) {
+      sendJson(res, 405, { error: "method not allowed; GET requires a job id at /api/generate/<jobId>" });
+      return;
+    }
+    const job = jobs.get(jobId);
+    if (!job) {
+      sendJson(res, 404, { error: `no job with id "${jobId}"` });
+      return;
+    }
+    sendJson(res, 200, job);
     return;
   }
-  try {
-    const parsed = JSON.parse(await readBody(req)) as { prompt?: unknown; amendRounds?: unknown };
-    if (typeof parsed.prompt !== "string" || parsed.prompt.trim().length === 0) {
-      sendJson(res, 400, { error: "`prompt` must be a non-empty string" });
-      return;
+
+  if (req.method === "POST" && (url === "/" || url === "")) {
+    try {
+      const parsed = JSON.parse(await readBody(req)) as { prompt?: unknown; amendRounds?: unknown };
+      if (typeof parsed.prompt !== "string" || parsed.prompt.trim().length === 0) {
+        sendJson(res, 400, { error: "`prompt` must be a non-empty string" });
+        return;
+      }
+      if (typeof parsed.amendRounds !== "number" || !Number.isInteger(parsed.amendRounds) || parsed.amendRounds < 0) {
+        sendJson(res, 400, { error: "`amendRounds` must be a non-negative integer" });
+        return;
+      }
+      const jobId = crypto.randomUUID();
+      const job: JobStatus = { status: "running", log: [] };
+      jobs.set(jobId, job);
+      // Start the run WITHOUT awaiting — the client polls GET /api/generate/<jobId> for progress.
+      // Each ProgressEvent is timestamped and appended to job.log as an English line (formatEvent).
+      generate(parsed.prompt, parsed.amendRounds, undefined, (ev) => {
+        job.log.push({ ts: Date.now(), text: formatEvent(ev) });
+      })
+        .then((result) => {
+          job.status = "done";
+          // Bridge ready GLBs to browser-fetchable /assets URLs HERE (the poll result, where the
+          // passes reach the client) — NOT on the POST response, which only carries the jobId.
+          job.result = publishSceneAssets(result);
+        })
+        .catch((err) => {
+          job.status = "error";
+          job.error = err instanceof Error ? err.message : String(err);
+          console.error("[dream3d-api] job failed:", err);
+        });
+      sendJson(res, 202, { jobId });
+    } catch (error) {
+      // Surface the failure to both the client and the dev console — never swallow.
+      console.error("[dream3d-api] /api/generate failed:", error);
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
-    if (typeof parsed.amendRounds !== "number" || !Number.isInteger(parsed.amendRounds) || parsed.amendRounds < 0) {
-      sendJson(res, 400, { error: "`amendRounds` must be a non-negative integer" });
-      return;
-    }
-    const result = await generate(parsed.prompt, parsed.amendRounds);
-    sendJson(res, 200, publishSceneAssets(result));
-  } catch (error) {
-    // Surface the failure to both the client and the dev console — never swallow.
-    console.error("[dream3d-api] /api/generate failed:", error);
-    sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+
+  sendJson(res, 405, { error: "method not allowed" });
+}
+
+// Render a ProgressEvent to a concise English log line for the live Studio log.
+function formatEvent(ev: ProgressEvent): string {
+  switch (ev.kind) {
+    case "plan":
+      return "Planning scene…";
+    case "plan_done":
+      return `Plan ready — ${ev.objectCount} object(s)`;
+    case "asset_start":
+      return `Starting asset ${ev.index + 1}/${ev.total}: ${ev.label}`;
+    case "asset_done":
+      return `Generating asset ${ev.completed}/${ev.total}: ${ev.label}`;
+    case "layout":
+      return "Arranging layout…";
+    case "render":
+      return `Amend ${ev.round}: rendering`;
+    case "critique":
+      return `Amend ${ev.round}: ${ev.issueCount} issue(s) found`;
+    case "fix":
+      return `Amend ${ev.round}: applied fixes`;
+    case "clean":
+      return `Amend ${ev.round}: clean`;
+    case "done":
+      return `Done — ${ev.passCount} pass(es)`;
   }
 }
 

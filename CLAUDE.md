@@ -4,16 +4,24 @@ Source of truth for the plan: `PLAN.md`. Verified Meshy API reference: `docs/mes
 
 ## Generating 3D objects (Meshy)
 
-Do **not** call the Meshy API directly — use the internal generator:
+Do **not** call the Meshy API directly. Use the internal generator (for ad-hoc
+best-of-N) or the pipeline asset provider (in the agent loop). Both share **one**
+cache module — `src/meshy/cache.mjs` (single source of truth; types in
+`cache.d.ts`) — so they read and write the same `~/.cache/dream3d/meshy/`.
 
 ```
 node scripts/meshy-generate.mjs "<object prompt>" [--count N] [--mode preview|refine]
+                                [--add N] [--rebuild] [--cache-dir <path>]
 ```
 
 - Returns a JSON manifest on **stdout** (logs go to stderr) listing candidate GLB models — send one prompt, get several candidates to pick from.
 - **Cache-aware**: keyed by prompt + mode, so repeat runs are free (no API call, no credits). Cache lives in `~/.cache/dream3d/meshy/`.
+- `--add N` generates N **more** candidates and appends them to the cached pool (always generates, ignores existing for the decision, still writes to cache; N falls back to `--count` if omitted). `--rebuild` discards the cached entry for that prompt+mode (deletes its `<key>/` dir and index record), then regenerates `--count` from scratch.
+- Each cache dir carries a human-readable `<key>/meta.json` marker — `{ key, prompt, normalizedPrompt, mode }` — so a hash-named dir is identifiable without recomputing sha256. It is written on first touch (a cache hit backfills it; a miss/add/rebuild writes it alongside the generated candidates).
 - Run `node scripts/meshy-generate.mjs --help` for the **full** options, requirements, cost, cache behavior, and manifest schema.
 - Requires `config/local.json` at the repo root — `{ "meshyApiKey": "msy_..." }` (gitignored) — only when actually generating; a pure cache hit needs no key.
+
+**Pipeline provider**: `src/pipeline/meshyAssetProvider.ts` (`AssetProvider.generate(obj)`) is cache-aware over the same cache. On a hit it returns `{ glbUrl }` where **`glbUrl` is the local `.glb` filesystem path** (the headless renderer accepts a local path) with zero network and zero credits; on a miss it generates one preview candidate, persists it through the shared cache helpers, and returns its local path.
 
 ## Multi-angle scene capture
 

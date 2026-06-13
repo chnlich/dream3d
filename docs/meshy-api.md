@@ -84,12 +84,23 @@ Response shape:
 ```json
 {
   "id": "...",
+  "model_type": "meshy-5",
+  "type": "preview",
   "status": "PENDING | IN_PROGRESS | SUCCEEDED | FAILED | CANCELED | EXPIRED",
   "progress": 0,
+  "seed": 1234567890,
+  "consumed_credits": 20,
   "model_urls": {
     "glb": "https://assets.meshy.ai/.../model.glb?Expires=...&Signature=...&Key-Pair-Id=..."
   },
   "thumbnail_url": "https://assets.meshy.ai/.../preview.png?...",
+  "video_url": "https://assets.meshy.ai/.../output.mp4?...",
+  "texture_richness": "high",
+  "remove_lighting": false,
+  "negative_prompt": "",
+  "created_at": 1781377450000,
+  "started_at": 1781377451000,
+  "finished_at": 1781377535000,
   "task_error": { "message": "..." }
 }
 ```
@@ -99,6 +110,15 @@ Response shape:
 - `progress` runs `0`–`100`.
 - `model_urls.glb` is populated once the task succeeds.
 - `task_error.message` carries the failure reason when a task fails.
+
+Additional fields observed live **[VERIFIED 2026-06-13]**:
+
+- `type` — the task mode (`"preview"` or `"refine"`); `model_type` — the generating model (e.g. `"meshy-5"`).
+- `seed` — integer; **reproducible** (re-submitting with the same seed reproduces the mesh).
+- `consumed_credits` — integer; the **exact** credit cost of this task (preview `20`, refine `10`).
+- `created_at` / `started_at` / `finished_at` — **epoch milliseconds** for the task lifecycle.
+- `texture_richness`, `remove_lighting`, `negative_prompt` — the texture/generation knobs echoed back.
+- `video_url` — a presigned turntable preview video (expires like the other asset URLs).
 
 **Poll cadence ~5–8s.** A `preview` job was observed reaching `SUCCEEDED` (progress `100`)
 in **well under 60s**. **[VERIFIED 2026-06-13]**
@@ -118,10 +138,10 @@ GET <model_urls.glb>
 
 ---
 
-## Refine (texture pass)  [DOCUMENTED, UNVERIFIED]
+## Refine (texture pass)  [VERIFIED 2026-06-13]
 
-> Not yet exercised in this project — out of scope for the demo (preview only). Documented here
-> for M2+.
+> Now exercised live from this project (see `scripts/meshy-generate.mjs --mode refine`). A refine
+> pass runs on top of a completed `preview` task and adds PBR texture.
 
 ```
 POST https://api.meshy.ai/openapi/v2/text-to-3d
@@ -135,8 +155,15 @@ Body:
 { "mode": "refine", "preview_task_id": "<previewTaskId>" }
 ```
 
-Returns a **new task id**; poll and download it identically to a preview task. Refine adds
-texture and **costs more than a preview** (exact cost TBD).
+Submitting this body returns a **new task id** (HTTP 202, same `{ "result": "<taskId>" }` shape);
+poll and download it identically to a preview task.
+
+- **Cost: 10 credits — HALF of a preview**, not more. (Earlier docs guessed "costs more"; live runs
+  show refine is *cheaper* than the 20-credit preview.) **[VERIFIED 2026-06-13]**
+- **Timing: ~79s** to `SUCCEEDED` — comparable to a preview. **[VERIFIED 2026-06-13]**
+- A refined task returns **all formats** in `model_urls` — `glb`, `fbx`, `usdz`, `obj`, `mtl`, `stl`
+  — plus PBR **`texture_urls`** (e.g. `base_color`, alongside the metallic/roughness/normal maps).
+  **[VERIFIED 2026-06-13]**
 
 ---
 
@@ -159,8 +186,10 @@ Response:
 
 ## Cost & timing  [VERIFIED 2026-06-13]
 
-- **1 preview = 20 credits** — balance went `8231` → `8211` across one preview job.
-- **Preview takes ~30–60s** and produces an **untextured gray mesh**.
+- **1 preview = 20 credits** (~85s) — balance went `8231` → `8211` across one preview job; produces an
+  **untextured gray mesh**.
+- **1 refine = 10 credits** (~79s) — **half** the cost of a preview; adds PBR texture on top of a
+  completed preview.
 
 ---
 
@@ -324,3 +353,7 @@ node scripts/meshy-smoke.mjs "your prompt"
 
 It reads the key from `config/local.json`, saves the GLB to `scripts/.out/smoke.glb`, and
 **consumes ~20 Meshy credits per run.**
+
+For a higher-level, **cache-aware best-of-N** generator (submits several candidates, caches by
+prompt+mode, optional `refine` pass), see [`scripts/meshy-generate.mjs`](../scripts/meshy-generate.mjs)
+— run `node scripts/meshy-generate.mjs --help` for the full spec.

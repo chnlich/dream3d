@@ -1,20 +1,17 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { Planner } from "./types";
 import type { PlannedObject, Room, ScenePlan, Vec3 } from "../scene/schema";
-import { loadConfig } from "../config";
+import { runClaude } from "../llm/claudeCli";
 
-// Real planner backed by Claude (@anthropic-ai/sdk). Opus 4.8 is asked to emit the
-// plan through a forced tool call (structured output), which we validate into a
-// typed ScenePlan. Anything off-shape throws — no silent fallback.
-const MODEL = "claude-opus-4-8";
-const MAX_TOKENS = 4096;
+// Real planner backed by the headless local `claude` CLI. Opus 4.8 is asked to emit the
+// plan as a single JSON object, which we validate into a typed ScenePlan. Anything
+// off-shape throws — no silent fallback.
 const MIN_OBJECTS = 3;
 const MAX_OBJECTS = 6;
 
 const SYSTEM_PROMPT = [
   "You are a 3D interior scene planner.",
   "Given a short scene description, design one plausible room and the objects inside it,",
-  "then return them by calling the emit_scene_plan tool exactly once.",
+  "then return them as a single JSON object matching the schema below.",
   "",
   "Rules:",
   `- Include between ${MIN_OBJECTS} and ${MAX_OBJECTS} distinct objects — the main furniture/props the description implies.`,
@@ -31,46 +28,45 @@ const SYSTEM_PROMPT = [
 
 const VEC3_SCHEMA = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 } as const;
 
-const SCENE_PLAN_TOOL: Anthropic.Tool = {
-  name: "emit_scene_plan",
-  description: "Return the structured room + objects layout for the requested scene.",
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["room", "objects"],
-    properties: {
-      room: {
+// The shape the model must return (formerly the emit_scene_plan tool's input_schema).
+// The headless CLI exposes no tool-calling, so the schema is delivered in the prompt
+// text and the model replies with a matching JSON object.
+const SCENE_PLAN_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["room", "objects"],
+  properties: {
+    room: {
+      type: "object",
+      additionalProperties: false,
+      required: ["width", "depth", "height"],
+      properties: {
+        width: { type: "number", description: "interior size along X, meters" },
+        depth: { type: "number", description: "interior size along Z, meters" },
+        height: { type: "number", description: "ceiling height along Y, meters" },
+      },
+    },
+    objects: {
+      type: "array",
+      minItems: MIN_OBJECTS,
+      maxItems: MAX_OBJECTS,
+      description: `${MIN_OBJECTS} to ${MAX_OBJECTS} objects placed in the room`,
+      items: {
         type: "object",
         additionalProperties: false,
-        required: ["width", "depth", "height"],
+        required: ["id", "label", "meshyPrompt", "approxSize", "position", "rotationYDeg"],
         properties: {
-          width: { type: "number", description: "interior size along X, meters" },
-          depth: { type: "number", description: "interior size along Z, meters" },
-          height: { type: "number", description: "ceiling height along Y, meters" },
-        },
-      },
-      objects: {
-        type: "array",
-        minItems: MIN_OBJECTS,
-        maxItems: MAX_OBJECTS,
-        description: `${MIN_OBJECTS} to ${MAX_OBJECTS} objects placed in the room`,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "label", "meshyPrompt", "approxSize", "position", "rotationYDeg"],
-          properties: {
-            id: { type: "string", description: "unique kebab-case id, e.g. 'sofa-1'" },
-            label: { type: "string", description: "short human label, e.g. 'Sofa'" },
-            meshyPrompt: {
-              type: "string",
-              description:
-                "Single isolated object for text-to-3D: silhouette + material + archetype. " +
-                "No IP/brand names, no background, no other objects.",
-            },
-            approxSize: { ...VEC3_SCHEMA, description: "intended bounding box [x, y, z] in meters" },
-            position: { ...VEC3_SCHEMA, description: "object center [x, y, z] in world meters (floor at y=0)" },
-            rotationYDeg: { type: "number", description: "yaw in degrees; 0 faces +Z" },
+          id: { type: "string", description: "unique kebab-case id, e.g. 'sofa-1'" },
+          label: { type: "string", description: "short human label, e.g. 'Sofa'" },
+          meshyPrompt: {
+            type: "string",
+            description:
+              "Single isolated object for text-to-3D: silhouette + material + archetype. " +
+              "No IP/brand names, no background, no other objects.",
           },
+          approxSize: { ...VEC3_SCHEMA, description: "intended bounding box [x, y, z] in meters" },
+          position: { ...VEC3_SCHEMA, description: "object center [x, y, z] in world meters (floor at y=0)" },
+          rotationYDeg: { type: "number", description: "yaw in degrees; 0 faces +Z" },
         },
       },
     },
@@ -84,26 +80,18 @@ export const claudePlanner: Planner = {
       throw new Error("claudePlanner.plan: prompt must be a non-empty string");
     }
 
-    const { anthropicApiKey } = loadConfig();
-    const client = new Anthropic({ apiKey: anthropicApiKey });
+    const fullPrompt = [
+      SYSTEM_PROMPT,
+      "",
+      `Scene description: ${trimmed}`,
+      "",
+      "Respond with ONLY the JSON object — no prose, no markdown code fences. It must match this schema:",
+      JSON.stringify(SCENE_PLAN_SCHEMA, null, 2),
+    ].join("\n");
 
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      tools: [SCENE_PLAN_TOOL],
-      tool_choice: { type: "tool", name: SCENE_PLAN_TOOL.name },
-      messages: [{ role: "user", content: trimmed }],
-    });
+    const text = await runClaude(fullPrompt);
 
-    const toolUse = response.content.find((block) => block.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
-      throw new Error(
-        `claudePlanner: model did not return a tool_use block (stop_reason=${response.stop_reason})`,
-      );
-    }
-
-    const input = asRecord(toolUse.input, "scene plan");
+    const input = asRecord(parseJson(text), "scene plan");
     const roomRaw = asRecord(input.room, "room");
     const room: Room = {
       width: asNumber(roomRaw.width, "room.width"),
@@ -142,7 +130,22 @@ export const claudePlanner: Planner = {
   },
 };
 
-// --- validation helpers: the model's tool input is untrusted, so narrow loudly ---
+// --- response parsing + validation: the model's output is untrusted, so narrow loudly ---
+
+// The CLI returns the model's final text; it may wrap the JSON in a ```json fence.
+// Strip a fenced block if present, then parse — failing loudly on anything unparseable.
+function parseJson(text: string): unknown {
+  let body = text.trim();
+  const fence = /```(?:json)?\s*\n?([\s\S]*?)```/.exec(body);
+  if (fence) {
+    body = fence[1].trim();
+  }
+  try {
+    return JSON.parse(body);
+  } catch (cause) {
+    throw new Error(`claudePlanner: model output was not valid JSON: ${body.slice(0, 1000)}`, { cause });
+  }
+}
 
 function asRecord(value: unknown, ctx: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export interface AppConfig {
-  anthropicApiKey: string;
   meshyApiKey: string;
 }
 
@@ -30,7 +29,6 @@ export function loadConfig(): AppConfig {
   }
   const parsed = JSON.parse(raw) as Record<string, unknown>;
   return {
-    anthropicApiKey: requireNonEmptyString(parsed.anthropicApiKey, "anthropicApiKey"),
     meshyApiKey: requireNonEmptyString(parsed.meshyApiKey, "meshyApiKey"),
   };
 }

@@ -1,13 +1,14 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { VisionCritic } from "./types";
 import type { Fix, IssueKind, ReviewIssue, SceneState, Severity, Vec3 } from "../scene/schema";
-import { loadConfig } from "../config";
+import { runClaude } from "../llm/claudeCli";
 
-// Real vision critic backed by Claude vision (@anthropic-ai/sdk). Opus 4.8 sees the
-// rendered screenshot plus the layout JSON and reports placement problems through a
-// forced tool call, which we validate into typed ReviewIssue[] tagged source:"vision".
-const MODEL = "claude-opus-4-8";
-const MAX_TOKENS = 4096;
+// Real vision critic backed by the headless local `claude` CLI. Opus 4.8 reads the
+// rendered screenshot (passed as a file path via the Read tool) plus the layout JSON
+// and reports placement problems as a JSON object, which we validate into typed
+// ReviewIssue[] tagged source:"vision". (Not exercised at amendRounds=0.)
 
 // The kinds a vision pass can detect (geometry handles the rest); each maps to one fix op.
 const ISSUE_KINDS: IssueKind[] = [
@@ -21,12 +22,18 @@ const ISSUE_KINDS: IssueKind[] = [
 const SEVERITIES: Severity[] = ["low", "medium", "high"];
 const FIX_OPS = ["move", "rotate", "resize"] as const;
 type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+const EXT_BY_MEDIA: Record<ImageMediaType, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
 
 const SYSTEM_PROMPT = [
   "You are a meticulous reviewer of rendered 3D interior scenes.",
   "You receive a screenshot of the current layout and the layout JSON (each object's id,",
   "label, size, and transform). Compare the image against the layout and report concrete,",
-  "visible placement problems by calling the emit_review_issues tool exactly once.",
+  "visible placement problems as a single JSON object matching the schema below.",
   "",
   "Each issue must reference an existing object id and carry exactly one concrete fix:",
   "- overlap / out_of_bounds / floating  -> op 'move', delta [dx, dy, dz] in meters.",
@@ -37,36 +44,34 @@ const SYSTEM_PROMPT = [
 
 const VEC3_SCHEMA = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 } as const;
 
-const REVIEW_TOOL: Anthropic.Tool = {
-  name: "emit_review_issues",
-  description: "Return the placement problems found in the rendered scene (empty if none).",
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["issues"],
-    properties: {
-      issues: {
-        type: "array",
-        description: "zero or more concrete issues; empty when the scene looks correct",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["objectId", "kind", "severity", "description", "fix"],
-          properties: {
-            objectId: { type: "string", description: "id of the offending object; must exist in the layout" },
-            kind: { type: "string", enum: ISSUE_KINDS },
-            severity: { type: "string", enum: SEVERITIES },
-            description: { type: "string", description: "one concrete sentence describing the visible problem" },
-            fix: {
-              type: "object",
-              additionalProperties: false,
-              required: ["op"],
-              properties: {
-                op: { type: "string", enum: FIX_OPS },
-                delta: { ...VEC3_SCHEMA, description: "move op: meters added to position [dx, dy, dz]" },
-                rotationYDeg: { type: "number", description: "rotate op: degrees added to current yaw" },
-                scaleFactor: { type: "number", description: "resize op: multiplier on current scale (>1 bigger)" },
-              },
+// The shape the model must return (formerly the emit_review_issues tool's input_schema),
+// delivered in the prompt text since the headless CLI exposes no tool-calling.
+const REVIEW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["issues"],
+  properties: {
+    issues: {
+      type: "array",
+      description: "zero or more concrete issues; empty when the scene looks correct",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["objectId", "kind", "severity", "description", "fix"],
+        properties: {
+          objectId: { type: "string", description: "id of the offending object; must exist in the layout" },
+          kind: { type: "string", enum: ISSUE_KINDS },
+          severity: { type: "string", enum: SEVERITIES },
+          description: { type: "string", description: "one concrete sentence describing the visible problem" },
+          fix: {
+            type: "object",
+            additionalProperties: false,
+            required: ["op"],
+            properties: {
+              op: { type: "string", enum: FIX_OPS },
+              delta: { ...VEC3_SCHEMA, description: "move op: meters added to position [dx, dy, dz]" },
+              rotationYDeg: { type: "number", description: "rotate op: degrees added to current yaw" },
+              scaleFactor: { type: "number", description: "resize op: multiplier on current scale (>1 bigger)" },
             },
           },
         },
@@ -81,34 +86,28 @@ export const claudeVisionCritic: VisionCritic = {
     const image = parseScreenshot(screenshotDataUrl);
     const knownIds = new Set(scene.objects.map((o) => o.id));
 
-    const { anthropicApiKey } = loadConfig();
-    const client = new Anthropic({ apiKey: anthropicApiKey });
+    // runClaude reads images off disk, so spill the screenshot to a temp file and pass
+    // its absolute path. Clean up the temp dir regardless of outcome.
+    const dir = mkdtempSync(join(tmpdir(), "dream3d-critic-"));
+    const imagePath = join(dir, `screenshot.${EXT_BY_MEDIA[image.mediaType]}`);
+    writeFileSync(imagePath, Buffer.from(image.data, "base64"));
 
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      tools: [REVIEW_TOOL],
-      tool_choice: { type: "tool", name: REVIEW_TOOL.name },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
-            { type: "text", text: `Layout JSON:\n${layoutSummary(scene)}` },
-          ],
-        },
-      ],
-    });
-
-    const toolUse = response.content.find((block) => block.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
-      throw new Error(
-        `claudeVisionCritic: model did not return a tool_use block (stop_reason=${response.stop_reason})`,
-      );
+    let text: string;
+    try {
+      const prompt = [
+        SYSTEM_PROMPT,
+        "",
+        `Layout JSON:\n${layoutSummary(scene)}`,
+        "",
+        "Respond with ONLY the JSON object — no prose, no markdown code fences. It must match this schema:",
+        JSON.stringify(REVIEW_SCHEMA, null, 2),
+      ].join("\n");
+      text = await runClaude(prompt, { imagePaths: [imagePath] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
 
-    const result = asRecord(toolUse.input, "review result");
+    const result = asRecord(parseJson(text), "review result");
     if (!Array.isArray(result.issues)) {
       throw new Error(`claudeVisionCritic: expected issues[] array, got ${describe(result.issues)}`);
     }
@@ -162,7 +161,22 @@ function parseScreenshot(dataUrl: string): { mediaType: ImageMediaType; data: st
   return { mediaType, data: match[2] };
 }
 
-// --- validation helpers: the model's tool input is untrusted, so narrow loudly ---
+// --- response parsing + validation: the model's output is untrusted, so narrow loudly ---
+
+// The CLI returns the model's final text; it may wrap the JSON in a ```json fence.
+// Strip a fenced block if present, then parse — failing loudly on anything unparseable.
+function parseJson(text: string): unknown {
+  let body = text.trim();
+  const fence = /```(?:json)?\s*\n?([\s\S]*?)```/.exec(body);
+  if (fence) {
+    body = fence[1].trim();
+  }
+  try {
+    return JSON.parse(body);
+  } catch (cause) {
+    throw new Error(`claudeVisionCritic: model output was not valid JSON: ${body.slice(0, 1000)}`, { cause });
+  }
+}
 
 function parseFix(value: unknown, ctx: string): Fix {
   const raw = asRecord(value, ctx);

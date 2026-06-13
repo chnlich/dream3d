@@ -64,6 +64,12 @@ export interface RenderOptions {
   clearColor?: number;
   /** Hard timeout for the in-browser render, in milliseconds. */
   timeoutMs?: number;
+  /**
+   * An already-launched Playwright Browser to reuse. When provided it is NOT
+   * closed by this call — the agent loop should launch one browser (launchBrowser)
+   * and reuse it across all vision passes to avoid paying cold-start per render.
+   */
+  browser?: any;
 }
 
 export interface RenderStats {
@@ -122,11 +128,22 @@ export async function renderSceneToPng(input: RenderInput, options: RenderOption
   const html = buildHtml(servedInput, opts);
   const server = await startServer(html, assets);
   try {
-    const result = await driveBrowser(server.origin, opts);
+    const result = await driveBrowser(server.origin, opts, options.browser);
     return { ...result, durationMs: performance.now() - startedAt };
   } finally {
     await server.close();
   }
+}
+
+/**
+ * Launch a Chromium browser configured for headless software-WebGL rendering on
+ * this host. Reuse one instance across many renderToPng calls (pass it via
+ * RenderOptions.browser) and close it when done.
+ */
+export async function launchBrowser(): Promise<any> {
+  ensureLibraryPath();
+  const chromium = await resolveChromium();
+  return chromium.launch({ headless: true, args: CHROMIUM_LAUNCH_ARGS });
 }
 
 /** Throws if `stats` indicates a blank/degenerate frame. Shared by the smoke script. */
@@ -146,13 +163,12 @@ export function assertNonBlank(stats: RenderStats): void {
 // Browser driver
 // ---------------------------------------------------------------------------
 
-async function driveBrowser(origin: string, opts: typeof DEFAULTS): Promise<{ png: Buffer; stats: RenderStats }> {
-  ensureLibraryPath();
-  const chromium = await resolveChromium();
-
-  const browser = await chromium.launch({ headless: true, args: CHROMIUM_LAUNCH_ARGS });
+async function driveBrowser(origin: string, opts: typeof DEFAULTS, reusedBrowser?: any): Promise<{ png: Buffer; stats: RenderStats }> {
+  const browser = reusedBrowser ?? (await launchBrowser());
+  const ownsBrowser = !reusedBrowser;
+  let page: any = null;
   try {
-    const page = await browser.newPage({ viewport: { width: opts.width, height: opts.height }, deviceScaleFactor: 1 });
+    page = await browser.newPage({ viewport: { width: opts.width, height: opts.height }, deviceScaleFactor: 1 });
     const consoleLines: string[] = [];
     page.on("console", (msg: { type(): string; text(): string }) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
     page.on("pageerror", (err: Error) => consoleLines.push(`[pageerror] ${err.message}`));
@@ -177,7 +193,12 @@ async function driveBrowser(origin: string, opts: typeof DEFAULTS): Promise<{ pn
     }
     return { png: Buffer.from(dataUrl.slice("data:image/png;base64,".length), "base64"), stats };
   } finally {
-    await browser.close();
+    if (page) {
+      await page.close();
+    }
+    if (ownsBrowser) {
+      await browser.close();
+    }
   }
 }
 

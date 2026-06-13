@@ -51,7 +51,7 @@ export interface RenderObject {
 }
 
 export interface RenderInput {
-  /** Room dimensions in world units; rendered as a floor + back/left walls, centered at the origin. */
+  /** Room dimensions in world units; rendered as a single open floor plane (no walls), centered at the origin. */
   room: { width: number; depth: number; height: number };
   objects: RenderObject[];
   /** Optional explicit camera; when omitted a 3/4 framing of the whole room is used. */

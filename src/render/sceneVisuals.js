@@ -1,7 +1,7 @@
 // Shared three.js "visual recipe" for the dream3d renderers.
 //
-// The scene lights, the room (floor + back/left walls), and the default 3/4
-// camera framing are identical between the headless render module
+// The scene lights, the ground (a single open floor plane — no walls), and the
+// default 3/4 camera framing are identical between the headless render module
 // (src/render/scene-page.js, which runs inside headless Chromium against the
 // vendored three.js) and the client viewer (src/viewer/SceneViewer.ts, which
 // uses the npm `three` package). This module is the single definition both
@@ -35,28 +35,21 @@ export function addLights(target) {
   target.add(fill);
 }
 
-// Room mirrors a box open toward the camera: floor flat at y=0, back wall at
-// z=-depth/2, left wall at x=-width/2 — centered at the origin.
+// Ground is a single flat plane at y=0, centered at the origin — no walls, no
+// ceiling. It is sized well beyond the room footprint (~4x width/depth, min
+// 40 m/side) so the dark, matte battlefield floor fills the frame as open ground.
 export function addRoom(target, room) {
-  const { width, depth, height } = room;
+  const { width, depth } = room;
+
+  const groundW = Math.max(width * 4, 40);
+  const groundD = Math.max(depth * 4, 40);
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(width, depth),
-    new THREE.MeshStandardMaterial({ color: 0x8b939e, roughness: 0.95, metalness: 0.0 }),
+    new THREE.PlaneGeometry(groundW, groundD),
+    new THREE.MeshStandardMaterial({ color: 0x2e2a24, roughness: 0.97, metalness: 0.0 }),
   );
   floor.rotation.x = -Math.PI / 2;
   target.add(floor);
-
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xd7dde4, roughness: 1.0, side: THREE.DoubleSide });
-
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat);
-  back.position.set(0, height / 2, -depth / 2);
-  target.add(back);
-
-  const left = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat);
-  left.rotation.y = Math.PI / 2;
-  left.position.set(-width / 2, height / 2, 0);
-  target.add(left);
 }
 
 // A 3/4 view that frames the whole room from a front corner. Pure math: returns

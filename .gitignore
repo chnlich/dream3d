@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local secrets / config — keys are supplied at runtime, never committed
+config/local.json
+
+# Smoke-test downloads
+scripts/.out/
+
+# OS cruft
+.DS_Store

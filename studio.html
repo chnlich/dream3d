@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dream3d — studio</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      /* Author display rules below would otherwise override the UA `hidden` behavior on flex
+         containers, so make `hidden` authoritative for every element. */
+      [hidden] {
+        display: none !important;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #1f2933;
+        background: #f5f7fa;
+      }
+      header.controls {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        background: #ffffff;
+        border-bottom: 1px solid #e1e5ea;
+      }
+      input,
+      button {
+        font: inherit;
+      }
+      input {
+        padding: 6px 8px;
+        border: 1px solid #c7ccd1;
+        border-radius: 6px;
+      }
+      #prompt {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .amend-label {
+        font-size: 13px;
+        color: #52606d;
+        white-space: nowrap;
+      }
+      .amend {
+        width: 56px;
+      }
+      button {
+        padding: 6px 14px;
+        border: 1px solid #c7ccd1;
+        border-radius: 6px;
+        background: #f0f2f5;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: #e4e7eb;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #generate {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: #ffffff;
+      }
+      .status {
+        margin-left: 4px;
+        max-width: 30vw;
+        color: #52606d;
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .banner {
+        flex: 0 0 auto;
+        padding: 8px 12px;
+        background: #fff4e5;
+        border-bottom: 1px solid #f0c98a;
+        color: #8a5a00;
+        font-size: 13px;
+      }
+      main {
+        flex: 1 1 auto;
+        display: flex;
+        min-height: 0;
+      }
+      #viewer {
+        flex: 1 1 auto;
+        display: block;
+        min-width: 0;
+        height: 100%;
+      }
+      .panel {
+        flex: 0 0 300px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-left: 1px solid #e1e5ea;
+        background: #ffffff;
+      }
+      .stepper {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid #e1e5ea;
+      }
+      #pass-label {
+        flex: 1 1 auto;
+        text-align: center;
+        font-size: 13px;
+      }
+      .panel-title {
+        flex: 0 0 auto;
+        margin: 0;
+        padding: 10px 12px 4px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #7b8794;
+      }
+      .object-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        margin: 0;
+        padding: 0 12px 12px;
+        list-style: none;
+      }
+      .object-list li {
+        padding: 8px 0;
+        border-bottom: 1px solid #eef1f4;
+        font-size: 13px;
+      }
+      .object-list .empty {
+        padding: 8px 0;
+        color: #9aa5b1;
+        font-style: italic;
+      }
+      .row-title {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .row-title code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: #eef1f4;
+      }
+      .row-url {
+        margin-top: 2px;
+        color: #7b8794;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .badge {
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .badge-ready {
+        background: #d3f9d8;
+        color: #2b8a3e;
+      }
+      .badge-pending {
+        background: #fff3bf;
+        color: #997404;
+      }
+      .badge-failed {
+        background: #ffe3e3;
+        color: #c92a2a;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="controls">
+      <input id="prompt" type="text" placeholder="Describe a scene…" />
+      <label class="amend-label">
+        amend
+        <input id="amend-rounds" class="amend" type="number" value="2" min="0" step="1" />
+      </label>
+      <button id="generate">Generate</button>
+      <span id="status" class="status"></span>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <main>
+      <canvas id="viewer"></canvas>
+      <aside class="panel">
+        <div id="stepper" class="stepper" hidden>
+          <button id="prev" disabled>Prev</button>
+          <span id="pass-label">Pass 0 / 0</span>
+          <button id="next" disabled>Next</button>
+        </div>
+        <h2 class="panel-title">Objects</h2>
+        <ul id="object-list" class="object-list"></ul>
+      </aside>
+    </main>
+
+    <script type="module" src="/src/studioMain.ts"></script>
+  </body>
+</html>

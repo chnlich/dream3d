@@ -41,6 +41,7 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, "index.html"),
         viewer: resolve(rootDir, "viewer.html"),
+        studio: resolve(rootDir, "studio.html"),
       },
     },
   },

@@ -4,6 +4,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { generate } from "../pipeline/orchestrator";
+import { publishSceneAssets } from "./assetBridge";
 
 // Vite dev-middleware plugin for the dream3d backend:
 //   POST /api/generate { prompt, amendRounds }  -> { passes } (runs the orchestrator)
@@ -45,7 +46,7 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
       return;
     }
     const result = await generate(parsed.prompt, parsed.amendRounds);
-    sendJson(res, 200, result);
+    sendJson(res, 200, publishSceneAssets(result));
   } catch (error) {
     // Surface the failure to both the client and the dev console — never swallow.
     console.error("[dream3d-api] /api/generate failed:", error);

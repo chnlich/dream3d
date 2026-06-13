@@ -2,12 +2,12 @@ import type { VisionCritic } from "./types";
 import type { ReviewIssue, SceneObject, SceneState } from "../scene/schema";
 
 // Offline, deterministic stand-in for the Claude-vision critic. It reads the
-// layout JSON only (the screenshot is ignored) and returns a single plausible
+// layout JSON only (the rendered views are ignored) and returns a single plausible
 // facing nudge: the object whose orientation is furthest from facing the room
 // center gets a `rotate` Fix toward it. Returning exactly one issue for any
 // non-empty scene keeps the amend loop progressing one object at a time.
 export const mockVisionCritic: VisionCritic = {
-  async review({ scene }: { scene: SceneState; screenshotDataUrl: string }): Promise<ReviewIssue[]> {
+  async review({ scene }: { scene: SceneState; views: { name: string; dataUrl: string }[] }): Promise<ReviewIssue[]> {
     if (scene.objects.length === 0) {
       return [];
     }

@@ -10,7 +10,9 @@ import { mockVisionCritic } from "./mockVisionCritic";
 import { claudePlanner } from "./claudePlanner";
 import { meshyAssetProvider } from "./meshyAssetProvider";
 import { claudeVisionCritic } from "./claudeVisionCritic";
-import { renderToPng, type RenderInput } from "../render/headless";
+import { launchBrowser, type RenderInput } from "../render/headless";
+import { captureViews } from "../render/multiangle/index";
+import { criticCameras } from "../render/criticCameras";
 
 // The agentic loop: plan -> assets -> layout -> [render -> geometry + vision ->
 // fix] x amendRounds. The response always carries amendRounds + 1 passes (the
@@ -54,26 +56,39 @@ export async function generate(prompt: string, amendRounds: number, mode: Mode =
 
   const passes: Pass[] = [{ sceneState: structuredClone(scene) }];
 
-  for (let round = 1; round <= amendRounds; round++) {
-    const screenshotDataUrl = mode === "real" ? await renderScene(scene) : "";
-    const issues = [...geometryCheck(scene), ...(await visionCritic.review({ scene, screenshotDataUrl }))];
-    if (issues.length === 0) {
-      break;
+  // REAL mode renders the working scene from several angles each round so the vision
+  // critic judges a correctly-scaled, multi-view scene; one warm browser is reused
+  // across every round and closed in the finally. MOCK mode ignores images and
+  // never launches a browser (its critic gets views: []).
+  const browser = mode === "real" ? await launchBrowser() : null;
+  try {
+    for (let round = 1; round <= amendRounds; round++) {
+      const views = browser ? await captureSceneViews(scene, browser) : [];
+      const issues = [...geometryCheck(scene), ...(await visionCritic.review({ scene, views }))];
+      if (issues.length === 0) {
+        break;
+      }
+      scene = fix(scene, issues);
+      passes.push({ sceneState: structuredClone(scene) });
     }
-    scene = fix(scene, issues);
-    passes.push({ sceneState: structuredClone(scene) });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 
   return { passes };
 }
 
-// REAL path only: render the working scene to a PNG data URL for the vision
-// critic. Maps SceneState -> the headless render harness's RenderInput.
-async function renderScene(scene: SceneState): Promise<string> {
-  const png = await renderToPng(toRenderInput(scene));
-  return `data:image/png;base64,${png.toString("base64")}`;
+// REAL path only: render the working scene from the critic's framing angles over the
+// warm browser, returning one labeled PNG data URL per view for the vision critic.
+async function captureSceneViews(scene: SceneState, browser: any): Promise<{ name: string; dataUrl: string }[]> {
+  const shots = await captureViews(toRenderInput(scene), criticCameras(scene.room), { browser });
+  return shots.map((s) => ({ name: s.name, dataUrl: `data:image/png;base64,${s.png.toString("base64")}` }));
 }
 
+// Maps the working SceneState -> the headless render harness's RenderInput, carrying
+// approxSize so the render page normalizes each model to its intended bbox.
 function toRenderInput(scene: SceneState): RenderInput {
   return {
     room: scene.room,
@@ -83,6 +98,7 @@ function toRenderInput(scene: SceneState): RenderInput {
       position: obj.transform.position,
       rotationYDeg: obj.transform.rotationYDeg,
       scale: obj.transform.scale,
+      approxSize: obj.approxSize,
     })),
   };
 }

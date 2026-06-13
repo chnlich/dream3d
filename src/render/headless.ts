@@ -48,6 +48,8 @@ export interface RenderObject {
   scale: number;
   /** Optional override color (0xRRGGBB) for primitives. */
   color?: number;
+  /** intended bbox (m); when present the page fits the model to it */
+  approxSize?: Vec3;
 }
 
 export interface RenderInput {

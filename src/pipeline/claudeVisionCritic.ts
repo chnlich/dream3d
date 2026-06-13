@@ -6,7 +6,7 @@ import type { Fix, IssueKind, ReviewIssue, SceneState, Severity, Vec3 } from "..
 import { runClaude } from "../llm/claudeCli";
 
 // Real vision critic backed by the headless local `claude` CLI. Opus 4.8 reads the
-// rendered screenshot (passed as a file path via the Read tool) plus the layout JSON
+// rendered angles (each passed as a file path via the Read tool) plus the layout JSON
 // and reports placement problems as a JSON object, which we validate into typed
 // ReviewIssue[] tagged source:"vision". (Not exercised at amendRounds=0.)
 
@@ -31,9 +31,9 @@ const EXT_BY_MEDIA: Record<ImageMediaType, string> = {
 
 const SYSTEM_PROMPT = [
   "You are a meticulous reviewer of rendered 3D interior scenes.",
-  "You receive a screenshot of the current layout and the layout JSON (each object's id,",
-  "label, size, and transform). Compare the image against the layout and report concrete,",
-  "visible placement problems as a single JSON object matching the schema below.",
+  "You receive one or more rendered camera angles of the current layout and the layout JSON",
+  "(each object's id, label, size, and transform). Compare the images against the layout and",
+  "report concrete, visible placement problems as a single JSON object matching the schema below.",
   "",
   "Each issue must reference an existing object id and carry exactly one concrete fix:",
   "- overlap / out_of_bounds / floating  -> op 'move', delta [dx, dy, dz] in meters.",
@@ -81,28 +81,39 @@ const REVIEW_SCHEMA = {
 };
 
 export const claudeVisionCritic: VisionCritic = {
-  async review(input: { scene: SceneState; screenshotDataUrl: string }): Promise<ReviewIssue[]> {
-    const { scene, screenshotDataUrl } = input;
-    const image = parseScreenshot(screenshotDataUrl);
+  async review(input: { scene: SceneState; views: { name: string; dataUrl: string }[] }): Promise<ReviewIssue[]> {
+    const { scene, views } = input;
+    if (views.length === 0) {
+      throw new Error("claudeVisionCritic: review requires at least one rendered view");
+    }
     const knownIds = new Set(scene.objects.map((o) => o.id));
 
-    // runClaude reads images off disk, so spill the screenshot to a temp file and pass
-    // its absolute path. Clean up the temp dir regardless of outcome.
+    // runClaude reads images off disk, so spill each view to a temp file (named by its
+    // angle label) and pass every path. Decode + write happen inside the try so a
+    // malformed dataUrl still cleans up the temp dir in the finally.
     const dir = mkdtempSync(join(tmpdir(), "dream3d-critic-"));
-    const imagePath = join(dir, `screenshot.${EXT_BY_MEDIA[image.mediaType]}`);
-    writeFileSync(imagePath, Buffer.from(image.data, "base64"));
-
     let text: string;
     try {
+      const imagePaths = views.map((view) => {
+        const image = parseDataUrl(view.dataUrl, view.name);
+        const imagePath = join(dir, `${view.name}.${EXT_BY_MEDIA[image.mediaType]}`);
+        writeFileSync(imagePath, Buffer.from(image.data, "base64"));
+        return imagePath;
+      });
+
       const prompt = [
         SYSTEM_PROMPT,
+        "",
+        `The ${views.length} image(s) are labeled camera angles of the SAME scene (${views.map((v) => v.name).join(", ")}) —`,
+        "the same objects seen from different positions, not different scenes. Report each object AT MOST ONCE",
+        "across all angles, citing the angle where the problem is clearest.",
         "",
         `Layout JSON:\n${layoutSummary(scene)}`,
         "",
         "Respond with ONLY the JSON object — no prose, no markdown code fences. It must match this schema:",
         JSON.stringify(REVIEW_SCHEMA, null, 2),
       ].join("\n");
-      text = await runClaude(prompt, { imagePaths: [imagePath] });
+      text = await runClaude(prompt, { imagePaths });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -151,10 +162,10 @@ function layoutSummary(scene: SceneState): string {
   );
 }
 
-function parseScreenshot(dataUrl: string): { mediaType: ImageMediaType; data: string } {
+function parseDataUrl(dataUrl: string, viewName: string): { mediaType: ImageMediaType; data: string } {
   const match = /^data:(image\/(?:png|jpe?g|gif|webp));base64,(.+)$/s.exec(dataUrl.trim());
   if (!match) {
-    throw new Error("claudeVisionCritic: screenshotDataUrl must be a base64-encoded image data URL");
+    throw new Error(`claudeVisionCritic: view "${viewName}" dataUrl must be a base64-encoded image data URL`);
   }
   const declared = match[1];
   const mediaType: ImageMediaType = declared === "image/jpg" ? "image/jpeg" : (declared as ImageMediaType);

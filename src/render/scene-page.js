@@ -65,11 +65,45 @@ async function addObjects(scene, objects) {
     } else {
       throw new Error(`object[${i}] has neither glbUrl nor a known primitive ("box"|"cylinder")`);
     }
-    node.scale.setScalar(obj.scale);
-    node.rotation.y = ((obj.rotationYDeg ?? 0) * Math.PI) / 180;
-    node.position.set(obj.position[0], obj.position[1], obj.position[2]);
-    scene.add(node);
+    if (obj.approxSize) {
+      placeNormalized(scene, node, obj);
+    } else {
+      node.scale.setScalar(obj.scale);
+      node.rotation.y = ((obj.rotationYDeg ?? 0) * Math.PI) / 180;
+      node.position.set(obj.position[0], obj.position[1], obj.position[2]);
+      scene.add(node);
+    }
   }
+}
+
+// Normalize a node to obj.approxSize and place it on the CENTER convention
+// (scene/schema.ts:6 + pipeline/layout.ts: transform.position is the object CENTER,
+// floor at y=0). Mirrors SceneViewer.normalizeAndPlace, but recenters the bbox on the
+// local origin on ALL THREE axes (NO base-seating, NO floating): the pivot then sits
+// at the object CENTER, so the headless critic sees the same scaled, centered model
+// the live viewer does.
+function placeNormalized(scene, node, obj) {
+  const [aw, ah, ad] = obj.approxSize;
+
+  node.updateMatrixWorld(true);
+  const preSize = new THREE.Box3().setFromObject(node).getSize(new THREE.Vector3());
+  // Uniform fit: divide by the largest size/approx ratio so the model fits within
+  // approxSize on every axis (and exactly fills it on the dominant one).
+  const fit = 1 / Math.max(preSize.x / aw, preSize.y / ah, preSize.z / ad);
+  node.scale.multiplyScalar(fit);
+  node.updateMatrixWorld(true);
+
+  const center = new THREE.Box3().setFromObject(node).getCenter(new THREE.Vector3());
+  node.position.x -= center.x;
+  node.position.y -= center.y;
+  node.position.z -= center.z;
+
+  const pivot = new THREE.Group();
+  pivot.add(node);
+  pivot.scale.setScalar(obj.scale);
+  pivot.rotation.y = ((obj.rotationYDeg ?? 0) * Math.PI) / 180;
+  pivot.position.set(obj.position[0], obj.position[1], obj.position[2]);
+  scene.add(pivot);
 }
 
 function primitiveMaterial(obj, index) {

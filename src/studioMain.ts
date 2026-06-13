@@ -1,6 +1,7 @@
-// Studio page: prompt -> POST /api/generate -> render each returned pass in the SceneViewer with a
-// Prev/Next stepper. Purely additive frontend wiring over the existing pipeline + viewer; no backend
-// or SceneViewer changes. `three` is pulled in only transitively via SceneViewer.
+// Studio page: prompt -> POST /api/generate (starts a job) -> poll GET /api/generate/<jobId>,
+// streaming a live progress log into the panel, then render each returned pass in the SceneViewer
+// with a Prev/Next stepper. Frontend wiring over the existing pipeline + viewer; no SceneViewer
+// changes. `three` is pulled in only transitively via SceneViewer.
 //
 // Failure policy (matches the repo's fail-fast principle): network / non-2xx / malformed-shape errors
 // are surfaced loudly in the status line and console — never swallowed. The single tolerated-and-
@@ -8,7 +9,7 @@
 // placeholder glbUrls 404 and the call throws. We catch THAT (and only that) and show a banner, while
 // the stepper + object list stay usable because they are updated before loadScene is awaited.
 import { SceneViewer } from "./viewer/SceneViewer";
-import type { GenerateRequest, GenerateResponse, Pass } from "./api/contract";
+import type { GenerateRequest, JobStartResponse, JobStatus, LogLine, Pass } from "./api/contract";
 import type { SceneState } from "./scene/schema";
 import scenePresetsJson from "../config/scene-presets.json";
 
@@ -21,6 +22,9 @@ interface ScenePreset {
 }
 const scenePresets = scenePresetsJson as ScenePreset[];
 const DEFAULT_PRESET_ID = "sc-demo";
+
+// Poll cadence for the generate job's progress (a real run is minute-scale; mock finishes instantly).
+const POLL_INTERVAL_MS = 1000;
 
 // Resolve a required element by id, throwing loudly if it is missing or the wrong tag (fail fast — a
 // missing node means studio.html and this module drifted out of sync).
@@ -44,6 +48,7 @@ const prevBtn = requireEl("prev", HTMLButtonElement);
 const nextBtn = requireEl("next", HTMLButtonElement);
 const passLabel = requireEl("pass-label", HTMLElement);
 const objectList = requireEl("object-list", HTMLElement);
+const logEl = requireEl("log", HTMLPreElement);
 
 const viewer = new SceneViewer(canvas);
 
@@ -133,6 +138,33 @@ async function renderPass(i: number): Promise<void> {
   }
 }
 
+// Append log lines beyond `shown` to #log, auto-scroll to the newest, and mirror the latest line into
+// the status text; return the new shown-count so the next poll only renders fresh entries.
+function appendLogLines(log: LogLine[], shown: number): number {
+  for (let i = shown; i < log.length; i++) {
+    logEl.append(document.createTextNode(`${log[i].text}\n`));
+  }
+  if (log.length > shown) {
+    logEl.scrollTop = logEl.scrollHeight;
+    setStatus(log[log.length - 1].text);
+  }
+  return log.length;
+}
+
+function appendLogText(text: string): void {
+  logEl.append(document.createTextNode(`${text}\n`));
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Fail loud: surface the error in the status line + log + console, and re-enable Generate.
+function failGenerate(err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  setStatus(`Error: ${message}`);
+  appendLogText(`Error: ${message}`);
+  console.error("[studio] generate failed:", err);
+  generateBtn.disabled = false;
+}
+
 async function onGenerate(): Promise<void> {
   const prompt = promptInput.value.trim();
   if (prompt.length === 0) {
@@ -142,6 +174,9 @@ async function onGenerate(): Promise<void> {
   generateBtn.disabled = true;
   setStatus("Generating…");
   clearBanner();
+  logEl.replaceChildren();
+
+  let jobId: string;
   try {
     // Clamp/validate the control to a non-negative integer (empty/invalid input -> 0 = draft only).
     const parsedRounds = Number.parseInt(amendRoundsInput.value, 10);
@@ -156,23 +191,54 @@ async function onGenerate(): Promise<void> {
       // Surface the server's error body verbatim — do not swallow.
       throw new Error(`/api/generate ${res.status}: ${await res.text()}`);
     }
-    const data = (await res.json()) as GenerateResponse;
-    if (!Array.isArray(data.passes) || data.passes.length === 0) {
-      const got = JSON.stringify(data).slice(0, 300);
-      throw new Error(`malformed /api/generate response: expected non-empty passes[], got ${got}`);
+    const started = (await res.json()) as JobStartResponse;
+    if (typeof started.jobId !== "string" || started.jobId.length === 0) {
+      const got = JSON.stringify(started).slice(0, 300);
+      throw new Error(`malformed /api/generate response: expected { jobId }, got ${got}`);
     }
-    passes = data.passes;
-    current = 0;
-    stepperEl.hidden = false;
-    setStatus(`Done — ${passes.length} pass${passes.length === 1 ? "" : "es"} for “${prompt}”.`);
-    await renderPass(0);
+    jobId = started.jobId;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    setStatus(`Error: ${message}`);
-    console.error("[studio] generate failed:", err);
-  } finally {
-    generateBtn.disabled = false;
+    failGenerate(err);
+    return;
   }
+
+  // Poll the job on a RECURSIVE setTimeout (never setInterval, so a slow poll never overlaps the
+  // next). Each tick appends only the new log lines, tracked via `shown`.
+  let shown = 0;
+  const poll = async (): Promise<void> => {
+    try {
+      const res = await fetch(`/api/generate/${jobId}`);
+      if (!res.ok) {
+        throw new Error(`/api/generate/${jobId} ${res.status}: ${await res.text()}`);
+      }
+      const status = (await res.json()) as JobStatus;
+      shown = appendLogLines(status.log, shown);
+
+      if (status.status === "running") {
+        window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
+        return;
+      }
+      if (status.status === "error") {
+        failGenerate(new Error(status.error ?? "job failed with no error message"));
+        return;
+      }
+      // status === "done": render the result's passes (fail loud if missing/empty).
+      const result = status.result;
+      if (!result || !Array.isArray(result.passes) || result.passes.length === 0) {
+        const got = JSON.stringify(result).slice(0, 300);
+        throw new Error(`malformed job result: expected non-empty passes[], got ${got}`);
+      }
+      passes = result.passes;
+      current = 0;
+      stepperEl.hidden = false;
+      setStatus(`Done — ${passes.length} pass${passes.length === 1 ? "" : "es"} for “${prompt}”.`);
+      await renderPass(0);
+      generateBtn.disabled = false;
+    } catch (err) {
+      failGenerate(err);
+    }
+  };
+  void poll();
 }
 
 generateBtn.addEventListener("click", () => void onGenerate());

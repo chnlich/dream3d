@@ -129,6 +129,21 @@
         letter-spacing: 0.04em;
         color: #7b8794;
       }
+      /* Live generation log. Shares the panel's vertical space with the object list (both grow
+         equally and scroll independently); during a run the empty list yields most of it to the log. */
+      .log {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+        margin: 0;
+        padding: 0 12px 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #3e4c59;
+      }
       .object-list {
         flex: 1 1 auto;
         min-height: 0;
@@ -210,6 +225,8 @@
           <span id="pass-label">Pass 0 / 0</span>
           <button id="next" disabled>Next</button>
         </div>
+        <h2 class="panel-title">Log</h2>
+        <pre id="log" class="log"></pre>
         <h2 class="panel-title">Objects</h2>
         <ul id="object-list" class="object-list"></ul>
       </aside>

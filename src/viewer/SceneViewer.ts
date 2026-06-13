@@ -21,6 +21,7 @@ export class SceneViewer {
   private readonly controls: OrbitControls;
   private readonly resizeObserver: ResizeObserver;
   private contentRoot: THREE.Group | null = null;
+  private renderRequested = false;
   private frameHandle: number | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -37,12 +38,16 @@ export class SceneViewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    // On-demand rendering: every OrbitControls "change" (orbit/pan/zoom and each damping step) asks for
+    // exactly one frame via the idempotent guard, so there is no always-on rAF loop.
+    this.controls.addEventListener("change", this.requestRender);
+    document.addEventListener("visibilitychange", this.handleVisibility);
 
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.resizeObserver.observe(canvas);
     this.handleResize();
 
-    this.animate();
+    this.requestRender();
   }
 
   async loadScene(scene: SceneState): Promise<void> {
@@ -53,15 +58,16 @@ export class SceneViewer {
     this.addLights(root);
     this.addRoom(root, scene.room);
 
+    // One shared GLTFLoader handles concurrent loadAsync calls; load all objects in parallel, then place
+    // them in declared order. Promise.all rejects on the first failed ready-GLB load (fail loud).
     const loader = new GLTFLoader();
-    for (const obj of scene.objects) {
-      const node = await this.buildObjectNode(obj, loader);
-      root.add(this.normalizeAndPlace(node, obj));
-    }
+    const nodes = await Promise.all(scene.objects.map((obj) => this.buildObjectNode(obj, loader)));
+    scene.objects.forEach((obj, i) => root.add(this.normalizeAndPlace(nodes[i], obj)));
 
     this.scene.add(root);
     this.contentRoot = root;
     this.frameRoom(scene.room);
+    this.requestRender();
   }
 
   // Render one frame and read the buffer back. Relies on preserveDrawingBuffer so toDataURL is valid.
@@ -75,6 +81,7 @@ export class SceneViewer {
     this.camera.position.set(position[0], position[1], position[2]);
     this.controls.target.set(target[0], target[1], target[2]);
     this.controls.update();
+    this.requestRender();
   }
 
   dispose(): void {
@@ -82,6 +89,8 @@ export class SceneViewer {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = null;
     }
+    this.controls.removeEventListener("change", this.requestRender);
+    document.removeEventListener("visibilitychange", this.handleVisibility);
     this.resizeObserver.disconnect();
     this.clearContent();
     this.controls.dispose();
@@ -90,10 +99,26 @@ export class SceneViewer {
 
   // --- internals -------------------------------------------------------------
 
-  private animate = (): void => {
-    this.frameHandle = requestAnimationFrame(this.animate);
+  // rAF callback (three.js "render on demand with damping" pattern): clear the flag first so a
+  // damping-driven "change" fired during controls.update() re-requests the next frame — that chain
+  // drives the damping settle and stops on its own once the camera comes to rest.
+  private render = (): void => {
+    this.renderRequested = false;
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+  };
+
+  // Idempotent frame request: schedules at most one pending frame, and nothing while the tab is hidden
+  // (so a hidden tab burns no frames and any damping tail halts).
+  private requestRender = (): void => {
+    if (this.renderRequested || document.hidden) return;
+    this.renderRequested = true;
+    this.frameHandle = requestAnimationFrame(this.render);
+  };
+
+  // Repaint once when the tab becomes visible again (frames were suppressed while it was hidden).
+  private handleVisibility = (): void => {
+    if (!document.hidden) this.requestRender();
   };
 
   private handleResize = (): void => {
@@ -104,6 +129,7 @@ export class SceneViewer {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.requestRender();
   };
 
   // Lights mirror scene-page.js addLights: hemisphere ambient + key + cool fill.
@@ -196,6 +222,7 @@ export class SceneViewer {
     this.controls.target.set(0, height * 0.3, 0);
     this.camera.updateProjectionMatrix();
     this.controls.update();
+    this.requestRender();
   }
 
   private clearContent(): void {

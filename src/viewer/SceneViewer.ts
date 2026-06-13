@@ -159,9 +159,11 @@ export class SceneViewer {
     return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
   }
 
-  // Normalize a node to approxSize, seat it on the floor, then apply its transform. The node is wrapped
-  // in a pivot whose origin is the model's horizontal center at its base, so yaw spins about the model's
-  // vertical axis and transform.scale grows it from the floor (keeping the base-on-floor offset).
+  // Normalize a node to approxSize, center its bbox on the pivot origin (all three axes), then apply its
+  // transform. transform.position is the object CENTER (scene/schema.ts), so seating the bbox center at
+  // the pivot origin and placing the pivot there drops the base onto the floor — at scale 1, position.y
+  // is the half-height — matching layout.ts / geometryCheck.ts / the headless renderer. The pivot wraps
+  // the node so yaw spins about the model's vertical axis and transform.scale grows it about its center.
   private normalizeAndPlace(node: THREE.Object3D, obj: SceneObject): THREE.Object3D {
     const approx = new THREE.Vector3(obj.approxSize[0], obj.approxSize[1], obj.approxSize[2]);
 
@@ -178,7 +180,7 @@ export class SceneViewer {
     const center = box.getCenter(new THREE.Vector3());
     node.position.x -= center.x;
     node.position.z -= center.z;
-    node.position.y -= box.min.y;
+    node.position.y -= center.y;
 
     const pivot = new THREE.Group();
     pivot.name = obj.id;

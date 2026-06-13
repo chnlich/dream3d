@@ -22,9 +22,6 @@ interface ScenePreset {
 const scenePresets = scenePresetsJson as ScenePreset[];
 const DEFAULT_PRESET_ID = "sc-demo";
 
-// amend/review loop not wired yet — pinned to 0; re-expose an input when it ships.
-const AMEND_ROUNDS = 0;
-
 // Resolve a required element by id, throwing loudly if it is missing or the wrong tag (fail fast — a
 // missing node means studio.html and this module drifted out of sync).
 function requireEl<T extends Element>(id: string, ctor: new () => T): T {
@@ -38,6 +35,7 @@ function requireEl<T extends Element>(id: string, ctor: new () => T): T {
 const canvas = requireEl("viewer", HTMLCanvasElement);
 const promptInput = requireEl("prompt", HTMLInputElement);
 const presetSelect = requireEl("preset", HTMLSelectElement);
+const amendRoundsInput = requireEl("amend-rounds", HTMLInputElement);
 const generateBtn = requireEl("generate", HTMLButtonElement);
 const statusEl = requireEl("status", HTMLElement);
 const bannerEl = requireEl("banner", HTMLElement);
@@ -114,7 +112,11 @@ async function renderPass(i: number): Promise<void> {
   current = Math.min(Math.max(i, 0), passes.length - 1);
   const scene = passes[current].sceneState;
 
-  passLabel.textContent = `Pass ${current + 1} / ${passes.length}`;
+  // Pass 0 is the draft; pass k>=1 is the scene after amend round k. Show the round total either way.
+  passLabel.textContent =
+    current === 0
+      ? `Draft — 0 / ${passes.length - 1} rounds`
+      : `After round ${current} / ${passes.length - 1}`;
   prevBtn.disabled = current === 0;
   nextBtn.disabled = current === passes.length - 1;
   renderObjectList(scene);
@@ -141,7 +143,10 @@ async function onGenerate(): Promise<void> {
   setStatus("Generating…");
   clearBanner();
   try {
-    const body: GenerateRequest = { prompt, amendRounds: AMEND_ROUNDS };
+    // Clamp/validate the control to a non-negative integer (empty/invalid input -> 0 = draft only).
+    const parsedRounds = Number.parseInt(amendRoundsInput.value, 10);
+    const amendRounds = Number.isNaN(parsedRounds) ? 0 : Math.max(0, parsedRounds);
+    const body: GenerateRequest = { prompt, amendRounds };
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },

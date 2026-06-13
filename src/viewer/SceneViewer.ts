@@ -1,16 +1,25 @@
 // Client-side interactive three.js viewer: "give a SceneState config, render the whole scene".
 //
-// The visual recipe (lights / room / default camera framing) mirrors the headless render module
-// at src/render/scene-page.js so the live viewer and the server-side proof renders look the same.
-// We do NOT import that module's vendored three.js copy — this file uses the npm `three` package.
+// The visual recipe (lights / room / default camera framing) lives in the shared module
+// src/render/sceneVisuals.js, imported here and by the headless render module
+// (src/render/scene-page.js) so the live viewer and the server-side proof renders stay in lockstep.
+// sceneVisuals.js imports only the bare "three" specifier; here it resolves to the npm `three`
+// package, while on the headless render page an importmap points the same import at the vendored build.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Room, SceneObject, SceneState, Vec3 } from "../scene/schema";
+import {
+  addLights,
+  addRoom,
+  defaultCameraFraming,
+  CLEAR_COLOR,
+  CAMERA_FOV,
+  CAMERA_NEAR,
+  CAMERA_FAR,
+} from "../render/sceneVisuals.js";
 
-// Background clear color, matching the headless harness default (src/render/headless.ts DEFAULTS).
-const CLEAR_COLOR = 0x1f262e;
 // Stand-in color for objects that are not a ready GLB yet (pending / failed / no url).
 const STANDIN_COLOR = 0x4dabf7;
 
@@ -32,8 +41,8 @@ export class SceneViewer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(CLEAR_COLOR);
 
-    // FOV / near / far mirror scene-page.js makeCamera. Aspect is corrected on first resize.
-    this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+    // FOV / near / far come from the shared visual recipe. Aspect is corrected on first resize.
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, CAMERA_FAR);
     this.camera.position.set(4, 4, 6);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -55,8 +64,8 @@ export class SceneViewer {
 
     const root = new THREE.Group();
     root.name = "sceneContent";
-    this.addLights(root);
-    this.addRoom(root, scene.room);
+    addLights(root);
+    addRoom(root, scene.room);
 
     // One shared GLTFLoader handles concurrent loadAsync calls; load all objects in parallel, then place
     // them in declared order. Promise.all rejects on the first failed ready-GLB load (fail loud).
@@ -132,40 +141,6 @@ export class SceneViewer {
     this.requestRender();
   };
 
-  // Lights mirror scene-page.js addLights: hemisphere ambient + key + cool fill.
-  private addLights(root: THREE.Object3D): void {
-    root.add(new THREE.HemisphereLight(0xffffff, 0x404654, 1.0));
-    const key = new THREE.DirectionalLight(0xffffff, 1.4);
-    key.position.set(4, 8, 6);
-    root.add(key);
-    const fill = new THREE.DirectionalLight(0x9fb4ff, 0.4);
-    fill.position.set(-6, 4, -3);
-    root.add(fill);
-  }
-
-  // Room mirrors scene-page.js addRoom: floor flat at y=0, back wall at z=-depth/2, left wall at x=-width/2.
-  private addRoom(root: THREE.Object3D, room: Room): void {
-    const { width, depth, height } = room;
-
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, depth),
-      new THREE.MeshStandardMaterial({ color: 0x8b939e, roughness: 0.95, metalness: 0.0 }),
-    );
-    floor.rotation.x = -Math.PI / 2;
-    root.add(floor);
-
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xd7dde4, roughness: 1.0, side: THREE.DoubleSide });
-
-    const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat);
-    back.position.set(0, height / 2, -depth / 2);
-    root.add(back);
-
-    const left = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat);
-    left.rotation.y = Math.PI / 2;
-    left.position.set(-width / 2, height / 2, 0);
-    root.add(left);
-  }
-
   // Ready GLB -> the loaded scene graph; everything else -> a box stand-in sized to approxSize so
   // pending / failed objects still show. A failed load on a ready object throws (fail loud).
   private async buildObjectNode(obj: SceneObject, loader: GLTFLoader): Promise<THREE.Object3D> {
@@ -214,12 +189,11 @@ export class SceneViewer {
     return pivot;
   }
 
-  // Default 3/4 framing derived from room size — mirrors scene-page.js makeCamera default branch.
+  // Default 3/4 framing from the shared visual recipe; apply to the camera + orbit target.
   private frameRoom(room: Room): void {
-    const { width, depth, height } = room;
-    const span = Math.max(width, depth, height);
-    this.camera.position.set(width * 0.7, height * 0.85 + span * 0.35, depth * 0.95 + span * 0.2);
-    this.controls.target.set(0, height * 0.3, 0);
+    const f = defaultCameraFraming(room);
+    this.camera.position.set(...f.position);
+    this.controls.target.set(...f.target);
     this.camera.updateProjectionMatrix();
     this.controls.update();
     this.requestRender();

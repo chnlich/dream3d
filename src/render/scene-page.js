@@ -16,6 +16,7 @@
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { addLights, addRoom, defaultCameraFraming, CAMERA_FOV, CAMERA_NEAR, CAMERA_FAR } from "./sceneVisuals.js";
 
 const PALETTE = [0xff6b6b, 0x4dabf7, 0x51cf66, 0xffd43b, 0xcc5de8, 0xff922b];
 
@@ -49,38 +50,6 @@ async function buildAndRender() {
   window.__renderState = "done";
 }
 
-function addLights(scene) {
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x404654, 1.0));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-  sun.position.set(4, 8, 6);
-  scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x9fb4ff, 0.4);
-  fill.position.set(-6, 4, -3);
-  scene.add(fill);
-}
-
-function addRoom(scene, room) {
-  const { width, depth, height } = room;
-
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(width, depth),
-    new THREE.MeshStandardMaterial({ color: 0x8b939e, roughness: 0.95, metalness: 0.0 }),
-  );
-  floor.rotation.x = -Math.PI / 2;
-  scene.add(floor);
-
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xd7dde4, roughness: 1.0, side: THREE.DoubleSide });
-
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat);
-  back.position.set(0, height / 2, -depth / 2);
-  scene.add(back);
-
-  const left = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat);
-  left.rotation.y = Math.PI / 2;
-  left.position.set(-width / 2, height / 2, 0);
-  scene.add(left);
-}
-
 async function addObjects(scene, objects) {
   const loader = new GLTFLoader();
   for (let i = 0; i < objects.length; i++) {
@@ -109,17 +78,16 @@ function primitiveMaterial(obj, index) {
 }
 
 function makeCamera(input, opts) {
-  const camera = new THREE.PerspectiveCamera(50, opts.width / opts.height, 0.1, 1000);
+  const camera = new THREE.PerspectiveCamera(CAMERA_FOV, opts.width / opts.height, CAMERA_NEAR, CAMERA_FAR);
   if (input.camera) {
     camera.position.set(input.camera.position[0], input.camera.position[1], input.camera.position[2]);
     camera.lookAt(new THREE.Vector3(input.camera.target[0], input.camera.target[1], input.camera.target[2]));
     return camera;
   }
   // Default: a 3/4 view that frames the whole room from a front corner.
-  const { width, depth, height } = input.room;
-  const span = Math.max(width, depth, height);
-  camera.position.set(width * 0.7, height * 0.85 + span * 0.35, depth * 0.95 + span * 0.2);
-  camera.lookAt(new THREE.Vector3(0, height * 0.3, 0));
+  const f = defaultCameraFraming(input.room);
+  camera.position.set(...f.position);
+  camera.lookAt(new THREE.Vector3(...f.target));
   return camera;
 }
 

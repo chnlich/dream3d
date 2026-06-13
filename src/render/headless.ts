@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = join(MODULE_DIR, "vendor", "three");
 const SCENE_PAGE_PATH = join(MODULE_DIR, "scene-page.js");
+const SCENE_VISUALS_PATH = join(MODULE_DIR, "sceneVisuals.js");
 
 // ---------------------------------------------------------------------------
 // Local input type (intentionally NOT the project SceneState schema).
@@ -264,6 +265,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, html: st
     }
     if (url === "/scene-page.js") {
       return send(res, 200, "text/javascript; charset=utf-8", await readFile(SCENE_PAGE_PATH));
+    }
+    if (url === "/sceneVisuals.js") {
+      return send(res, 200, "text/javascript; charset=utf-8", await readFile(SCENE_VISUALS_PATH));
     }
     if (url.startsWith("/vendor/three/")) {
       const rel = url.slice("/vendor/three/".length);

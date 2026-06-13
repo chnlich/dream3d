@@ -89,7 +89,7 @@ export const claudePlanner: Planner = {
       JSON.stringify(SCENE_PLAN_SCHEMA, null, 2),
     ].join("\n");
 
-    const text = await runClaude(fullPrompt);
+    const text = await runClaude(fullPrompt, { caller: "planner" });
 
     const input = asRecord(parseJson(text), "scene plan");
     const roomRaw = asRecord(input.room, "room");

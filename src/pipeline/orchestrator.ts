@@ -1,4 +1,4 @@
-import type { GenerateResponse, Pass } from "../api/contract";
+import type { GenerateResponse, Pass, ProgressEvent } from "../api/contract";
 import type { SceneState } from "../scene/schema";
 import type { AssetProvider, Planner, VisionCritic } from "./types";
 import { layout } from "./layout";
@@ -42,13 +42,32 @@ function implsFor(mode: Mode): Impls {
   return { planner: mockPlanner, assetProvider: mockAssetProvider, visionCritic: mockVisionCritic };
 }
 
-export async function generate(prompt: string, amendRounds: number, mode: Mode = resolveMode()): Promise<GenerateResponse> {
+// `onEvent` is optional and defaults to a no-op (undefined), so existing callers are byte-identical;
+// the server passes one to stream progress into a pollable job log.
+export async function generate(
+  prompt: string,
+  amendRounds: number,
+  mode: Mode = resolveMode(),
+  onEvent?: (ev: ProgressEvent) => void,
+): Promise<GenerateResponse> {
   const { planner, assetProvider, visionCritic } = implsFor(mode);
 
+  onEvent?.({ kind: "plan" });
   const plan = await planner.plan(prompt);
-  const assets = await mapWithConcurrency(plan.objects, ASSET_CONCURRENCY, (obj) => assetProvider.generate(obj));
+  onEvent?.({ kind: "plan_done", objectCount: plan.objects.length });
+
+  const total = plan.objects.length;
+  let completed = 0; // single-threaded JS: no race on the shared counter across concurrent assets.
+  const assets = await mapWithConcurrency(plan.objects, ASSET_CONCURRENCY, async (obj, index) => {
+    onEvent?.({ kind: "asset_start", index, total, label: obj.label });
+    const asset = await assetProvider.generate(obj);
+    completed++;
+    onEvent?.({ kind: "asset_done", index, total, completed, label: obj.label });
+    return asset;
+  });
 
   let scene = layout(plan);
+  onEvent?.({ kind: "layout" });
   scene.objects.forEach((obj, index) => {
     obj.glbUrl = assets[index].glbUrl;
     obj.status = "ready";
@@ -63,12 +82,18 @@ export async function generate(prompt: string, amendRounds: number, mode: Mode =
   const browser = mode === "real" ? await launchBrowser() : null;
   try {
     for (let round = 1; round <= amendRounds; round++) {
+      if (mode === "real") {
+        onEvent?.({ kind: "render", round });
+      }
       const views = browser ? await captureSceneViews(scene, browser) : [];
       const issues = [...geometryCheck(scene), ...(await visionCritic.review({ scene, views }))];
+      onEvent?.({ kind: "critique", round, issueCount: issues.length });
       if (issues.length === 0) {
+        onEvent?.({ kind: "clean", round });
         break;
       }
       scene = fix(scene, issues);
+      onEvent?.({ kind: "fix", round, issueCount: issues.length });
       passes.push({ sceneState: structuredClone(scene) });
     }
   } finally {
@@ -77,6 +102,7 @@ export async function generate(prompt: string, amendRounds: number, mode: Mode =
     }
   }
 
+  onEvent?.({ kind: "done", passCount: passes.length });
   return { passes };
 }
 

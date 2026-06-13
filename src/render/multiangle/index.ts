@@ -2,10 +2,11 @@
 //
 // captureViews() is a thin layer over the merged headless renderer
 // (../headless): it resolves each CameraSpec to a concrete { position, target },
-// then renders the scene once per camera over a single warm browser
-// (SEQUENTIALLY, no concurrency — under SwiftShader renders share the CPU, see
-// docs/headless-render.md). These PNGs feed the Opus vision critic in the agent
-// loop (PLAN.md step 4).
+// then renders every camera over ONE render session (createRenderSession) — a
+// single local server, page, navigation, and scene + GLB load, after which each
+// camera is a cheap render-only capture (SEQUENTIALLY, no concurrency — under
+// SwiftShader renders share the CPU, see docs/headless-render.md). These PNGs feed
+// the Opus vision critic in the agent loop (PLAN.md step 4).
 //
 // This module derives NO angles and applies NO presets — cameras are entirely
 // caller-controlled — and it re-implements no render logic and re-vendors no
@@ -22,12 +23,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CameraSpec, CaptureOptions, ViewShot } from "./types";
-import type { RenderInput, RenderOptions, RenderResult, RenderStats, Vec3 } from "../headless";
+import type { RenderInput, RenderOptions, RenderSession, RenderStats, Vec3 } from "../headless";
 
-const { renderSceneToPng, launchBrowser, assertNonBlank } = (await import(
+const { createRenderSession, launchBrowser, assertNonBlank } = (await import(
   new URL("../headless.ts", import.meta.url).href
 )) as {
-  renderSceneToPng: (input: RenderInput, options?: RenderOptions) => Promise<RenderResult>;
+  createRenderSession: (input: RenderInput, options?: RenderOptions) => Promise<RenderSession>;
   launchBrowser: () => Promise<any>;
   assertNonBlank: (stats: RenderStats) => void;
 };
@@ -47,14 +48,17 @@ interface ManifestView {
 }
 
 /**
- * Render one PNG per camera by reusing the headless renderer, in input order.
+ * Render one PNG per camera over a single render session, in input order.
  *
- * Cameras render sequentially over a single browser — reused if `opts.browser`
- * is supplied (and left open), otherwise launched here and closed in a finally.
- * Each caller camera overrides any camera baked into `scene`. With
- * `opts.assertNonBlank !== false`, every frame is checked for blankness and the
- * failure is rethrown with the offending view name prefixed. When `opts.outDir`
- * is set, `<name>.png` per view plus a manifest.json are written there.
+ * The scene + its GLBs load ONCE (one navigation); cameras then render
+ * sequentially as render-only captures against that loaded scene. The session
+ * runs over a single browser — reused if `opts.browser` is supplied (and left
+ * open), otherwise launched here and closed in a finally. Each caller camera
+ * overrides any camera baked into `scene`. With `opts.assertNonBlank !== false`,
+ * every frame is checked for blankness and the failure is rethrown with the
+ * offending view name prefixed. When `opts.outDir` is set, `<name>.png` per view
+ * plus a manifest.json are written there. Each ViewShot's `durationMs` is the
+ * per-view render-only time (no longer the full per-view navigation cost).
  *
  * Throws if `cameras` is empty, if two cameras share a name, or if any camera
  * does not set exactly one of `target` / `direction`.
@@ -72,28 +76,37 @@ export async function captureViews(
   const ownsBrowser = !opts.browser;
   const browser = opts.browser ?? (await launchBrowser());
   // Constant across cameras. Only forward keys that are actually set:
-  // renderSceneToPng merges `{ ...DEFAULTS, ...options }`, so a literal
+  // createRenderSession merges `{ ...DEFAULTS, ...options }`, so a literal
   // `undefined` would clobber the default rather than fall back to it.
-  const renderOptions: RenderOptions = { browser };
-  if (opts.width !== undefined) renderOptions.width = opts.width;
-  if (opts.height !== undefined) renderOptions.height = opts.height;
-  if (opts.clearColor !== undefined) renderOptions.clearColor = opts.clearColor;
-  if (opts.timeoutMs !== undefined) renderOptions.timeoutMs = opts.timeoutMs;
+  const sessionOptions: RenderOptions = { browser };
+  if (opts.width !== undefined) sessionOptions.width = opts.width;
+  if (opts.height !== undefined) sessionOptions.height = opts.height;
+  if (opts.clearColor !== undefined) sessionOptions.clearColor = opts.clearColor;
+  if (opts.timeoutMs !== undefined) sessionOptions.timeoutMs = opts.timeoutMs;
 
   const shots: ViewShot[] = [];
   try {
-    for (const cam of resolved) {
-      // Caller cameras win: override any camera baked into the scene.
-      const input: RenderInput = { ...scene, camera: cam.camera };
-      const { png, stats, durationMs } = await renderSceneToPng(input, renderOptions);
-      if (opts.assertNonBlank !== false) {
-        try {
-          assertNonBlank(stats);
-        } catch (error) {
-          throw new Error(`view "${cam.name}": ${(error as Error).message}`);
+    // ONE session for every camera: a single local server, page, navigation, and
+    // scene + GLB load — then each camera is a cheap render-only capture against
+    // the already-loaded scene (no re-navigation, no GLB re-parse per angle).
+    const session = await createRenderSession(scene, sessionOptions);
+    try {
+      for (const cam of resolved) {
+        // Caller cameras win: each overrides any camera baked into the scene.
+        const startedAt = performance.now();
+        const { png, stats } = await session.renderView(cam.camera);
+        const durationMs = performance.now() - startedAt;
+        if (opts.assertNonBlank !== false) {
+          try {
+            assertNonBlank(stats);
+          } catch (error) {
+            throw new Error(`view "${cam.name}": ${(error as Error).message}`);
+          }
         }
+        shots.push({ name: cam.name, png, stats, durationMs, camera: cam.camera });
       }
-      shots.push({ name: cam.name, png, stats, durationMs, camera: cam.camera });
+    } finally {
+      await session.close();
     }
   } finally {
     if (ownsBrowser) {

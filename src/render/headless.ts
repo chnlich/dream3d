@@ -11,8 +11,11 @@
 //     three.js build, and any local GLB assets. Chromium navigates to it. We use
 //     a real http:// origin (not file://) so ES-module importmaps and GLB fetches
 //     resolve cleanly.
-//   - The browser-side logic lives in scene-page.js; it renders one frame and
-//     exposes the PNG (canvas.toDataURL) + pixel stats on `window`.
+//   - The browser-side logic lives in scene-page.js; it builds the scene + loads
+//     the GLBs ONCE on load, then exposes window.__renderView(camera) so the Node
+//     side can capture many angles (canvas.toDataURL + pixel stats) against that
+//     one already-loaded scene. createRenderSession is the persistent wrapper;
+//     renderSceneToPng is a one-shot built on top of it.
 //   - We deliberately do NOT import the project SceneState schema here (it is
 //     built in parallel). Callers map SceneState -> RenderInput; see the docs.
 
@@ -91,6 +94,25 @@ export interface RenderResult {
   durationMs: number;
 }
 
+/**
+ * A persistent render session over ONE scene: the local asset server, the
+ * Chromium page, the navigation, and the scene + GLB load are all paid ONCE on
+ * creation. `renderView` then captures an arbitrary camera angle against that
+ * already-loaded scene — so multi-angle capture pays a single navigation + parse
+ * and each extra angle is render-only. Created via createRenderSession.
+ */
+export interface RenderSession {
+  /**
+   * Render the loaded scene from `camera` and return the PNG + pixel stats. When
+   * `camera` is omitted, the camera baked into the session's RenderInput (or the
+   * default 3/4 framing) is used. Call sequentially — all views share one page
+   * and canvas (under SwiftShader concurrent renders only contend on CPU anyway).
+   */
+  renderView(camera?: { position: Vec3; target: Vec3 }): Promise<{ png: Buffer; stats: RenderStats }>;
+  /** Tear down the page + local server (and the browser, iff this session owns it). */
+  close(): Promise<void>;
+}
+
 const DEFAULTS = { width: 1024, height: 768, clearColor: 0x1f262e, timeoutMs: 30_000 };
 
 // Chromium flags that make WebGL work in headless Chromium on a GPU-less WSL host.
@@ -124,18 +146,89 @@ export async function renderToPng(input: RenderInput, options: RenderOptions = {
 
 /** Like renderToPng, but also returns pixel stats + timing (used by the smoke + benchmarks). */
 export async function renderSceneToPng(input: RenderInput, options: RenderOptions = {}): Promise<RenderResult> {
-  const opts = { ...DEFAULTS, ...options };
   const startedAt = performance.now();
+  // One-shot render: a single-camera session that loads the scene, captures the
+  // input's camera (or the default framing), and tears straight back down.
+  const session = await createRenderSession(input, options);
+  try {
+    const { png, stats } = await session.renderView();
+    return { png, stats, durationMs: performance.now() - startedAt };
+  } finally {
+    await session.close();
+  }
+}
 
+/**
+ * Open a persistent render session: start the local asset server, open one page,
+ * navigate ONCE, and load scene-page.js + the vendored three build + every GLB in
+ * `input` ONCE. The returned session renders arbitrary camera angles against that
+ * already-loaded scene (renderView) until you close() it. Reuses an injected
+ * `options.browser` (left open on close); otherwise launches and owns one.
+ */
+export async function createRenderSession(input: RenderInput, options: RenderOptions = {}): Promise<RenderSession> {
+  const opts = { ...DEFAULTS, ...options };
   const { servedInput, assets } = registerLocalAssets(input);
   const html = buildHtml(servedInput, opts);
   const server = await startServer(html, assets);
+
+  const browser = options.browser ?? (await launchBrowser());
+  const ownsBrowser = !options.browser;
+
+  // Captured across the session so a render failure can report what the page logged.
+  const consoleLines: string[] = [];
+  let page: any = null;
   try {
-    const result = await driveBrowser(server.origin, opts, options.browser);
-    return { ...result, durationMs: performance.now() - startedAt };
-  } finally {
+    page = await browser.newPage({ viewport: { width: opts.width, height: opts.height }, deviceScaleFactor: 1 });
+    page.on("console", (msg: { type(): string; text(): string }) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
+    page.on("pageerror", (err: Error) => consoleLines.push(`[pageerror] ${err.message}`));
+
+    // scene-page.js builds the scene + loads all GLBs on load, then flips
+    // __renderState to "done" (or "error"). Wait for that here so the first
+    // renderView never races an unfinished scene/GLB load.
+    await page.goto(server.origin, { waitUntil: "load" });
+    await page.waitForFunction(
+      () => (window as any).__renderState === "done" || (window as any).__renderState === "error",
+      undefined,
+      { timeout: opts.timeoutMs },
+    );
+    const state = await page.evaluate(() => (window as any).__renderState);
+    if (state !== "done") {
+      const pageError = await page.evaluate(() => (window as any).__renderError);
+      throw new Error(`In-browser scene build failed:\n${pageError}\n--- console ---\n${consoleLines.join("\n")}`);
+    }
+  } catch (error) {
+    // Scene never loaded — release everything this call opened (do NOT close an
+    // injected browser) before propagating.
+    if (page) {
+      await page.close();
+    }
     await server.close();
+    if (ownsBrowser) {
+      await browser.close();
+    }
+    throw error;
   }
+
+  return {
+    async renderView(camera?: { position: Vec3; target: Vec3 }): Promise<{ png: Buffer; stats: RenderStats }> {
+      const result = (await page.evaluate(
+        (cam: { position: Vec3; target: Vec3 } | null) => (window as any).__renderView(cam),
+        camera ?? null,
+      )) as { png: string; stats: RenderStats };
+      const dataUrl = result.png;
+      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png;base64,")) {
+        throw new Error(`Render produced no PNG data URL\n--- console ---\n${consoleLines.join("\n")}`);
+      }
+      return { png: Buffer.from(dataUrl.slice("data:image/png;base64,".length), "base64"), stats: result.stats };
+    },
+    async close(): Promise<void> {
+      await page.close();
+      await server.close();
+      if (ownsBrowser) {
+        await browser.close();
+      }
+    },
+  };
 }
 
 /**
@@ -163,47 +256,8 @@ export function assertNonBlank(stats: RenderStats): void {
 }
 
 // ---------------------------------------------------------------------------
-// Browser driver
+// Chromium resolution
 // ---------------------------------------------------------------------------
-
-async function driveBrowser(origin: string, opts: typeof DEFAULTS, reusedBrowser?: any): Promise<{ png: Buffer; stats: RenderStats }> {
-  const browser = reusedBrowser ?? (await launchBrowser());
-  const ownsBrowser = !reusedBrowser;
-  let page: any = null;
-  try {
-    page = await browser.newPage({ viewport: { width: opts.width, height: opts.height }, deviceScaleFactor: 1 });
-    const consoleLines: string[] = [];
-    page.on("console", (msg: { type(): string; text(): string }) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
-    page.on("pageerror", (err: Error) => consoleLines.push(`[pageerror] ${err.message}`));
-
-    await page.goto(origin, { waitUntil: "load" });
-    await page.waitForFunction(
-      () => (window as any).__renderState === "done" || (window as any).__renderState === "error",
-      undefined,
-      { timeout: opts.timeoutMs },
-    );
-
-    const state = await page.evaluate(() => (window as any).__renderState);
-    if (state !== "done") {
-      const pageError = await page.evaluate(() => (window as any).__renderError);
-      throw new Error(`In-browser render failed:\n${pageError}\n--- console ---\n${consoleLines.join("\n")}`);
-    }
-
-    const dataUrl = (await page.evaluate(() => (window as any).__png)) as string;
-    const stats = (await page.evaluate(() => (window as any).__stats)) as RenderStats;
-    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png;base64,")) {
-      throw new Error("Render produced no PNG data URL");
-    }
-    return { png: Buffer.from(dataUrl.slice("data:image/png;base64,".length), "base64"), stats };
-  } finally {
-    if (page) {
-      await page.close();
-    }
-    if (ownsBrowser) {
-      await browser.close();
-    }
-  }
-}
 
 async function resolveChromium(): Promise<any> {
   // Prefer the project's own playwright (present after `npm install` at integration

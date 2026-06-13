@@ -1,5 +1,5 @@
 [
-  { "id": "sc-demo", "label": "StarCraft standoff (demo)", "prompt": "A StarCraft skirmish on a scorched battlefield: a lone Terran marine in bulky power armor faces a charging zergling and a towering hydralisk." },
+  { "id": "sc-demo", "label": "StarCraft standoff", "prompt": "A StarCraft skirmish on a scorched battlefield: a lone Terran marine in bulky power armor faces a charging zergling and a towering hydralisk." },
   { "id": "living-room", "label": "Cozy living room", "prompt": "a cozy living room with a sofa, a coffee table and a floor lamp" },
   { "id": "office", "label": "Office desk", "prompt": "an office desk with a monitor, a keyboard and a mug" }
 ]

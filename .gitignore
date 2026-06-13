@@ -10,5 +10,8 @@ config/local.json
 # Smoke-test downloads
 scripts/.out/
 
+# Sample GLB assets (~42MB) — gitignored; fresh clones regenerate via scripts/meshy-generate.mjs
+public/sample-assets/
+
 # OS cruft
 .DS_Store

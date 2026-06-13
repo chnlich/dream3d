@@ -36,6 +36,7 @@ import {
   validCandidatesOnDisk,
   writeIndex,
 } from "../src/meshy/cache.mjs";
+import { PREVIEW_PARAMS, REFINE_PARAMS, paramSignature } from "../src/meshy/genParams.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(SCRIPT_DIR);
@@ -163,8 +164,19 @@ async function downloadWithRetry(url, label) {
 // Generates one candidate end-to-end and writes its files into <cacheDir>/<key>/.
 // Returns the sidecar object (also embedded into index.json by the caller).
 async function generateCandidate(apiKey, { prompt, mode, key, cacheDir }, ordinal) {
+  // Preview/refine submit params come from the SINGLE central config
+  // (src/meshy/genParams.mjs) shared with the pipeline provider, so the CLI and
+  // the provider submit byte-identical jobs and derive identical cache keys.
   console.error(`[candidate ${ordinal}] submitting preview…`);
-  const previewTaskId = await submitJob(apiKey, { mode: "preview", prompt, target_formats: ["glb"] });
+  const previewTaskId = await submitJob(apiKey, {
+    mode: "preview",
+    prompt,
+    target_formats: ["glb"],
+    should_remesh: PREVIEW_PARAMS.should_remesh,
+    target_polycount: PREVIEW_PARAMS.target_polycount,
+    topology: PREVIEW_PARAMS.topology,
+    ai_model: PREVIEW_PARAMS.ai_model,
+  });
   console.error(`[candidate ${ordinal}] preview task ${previewTaskId} submitted; polling…`);
   const previewTask = await waitForTask(apiKey, previewTaskId, ordinal);
 
@@ -172,7 +184,15 @@ async function generateCandidate(apiKey, { prompt, mode, key, cacheDir }, ordina
   let finalTask = previewTask;
   if (mode === "refine") {
     console.error(`[candidate ${ordinal}] submitting refine for preview ${previewTaskId}…`);
-    finalTaskId = await submitJob(apiKey, { mode: "refine", preview_task_id: previewTaskId });
+    finalTaskId = await submitJob(apiKey, {
+      mode: "refine",
+      preview_task_id: previewTaskId,
+      enable_pbr: REFINE_PARAMS.enable_pbr,
+      remove_lighting: REFINE_PARAMS.remove_lighting,
+      hd_texture: REFINE_PARAMS.hd_texture,
+      ai_model: REFINE_PARAMS.ai_model,
+      target_formats: ["glb"],
+    });
     console.error(`[candidate ${ordinal}] refine task ${finalTaskId} submitted; polling…`);
     finalTask = await waitForTask(apiKey, finalTaskId, ordinal);
   }
@@ -362,10 +382,15 @@ COST (Meshy credits):
   - Cached candidates cost 0.
 
 CACHE:
-  - key = sha256(normalizedPrompt + "::" + mode) hex, first 16 chars, where
-    normalizedPrompt = prompt.trim().toLowerCase() with every run of whitespace
-    collapsed to a single space.
-    (e.g. key(${JSON.stringify(CHECKPOINT_PROMPT)},"preview") = ${CHECKPOINT_KEY})
+  - key = sha256(normalizedPrompt + "::" + mode + "::" + paramSig) hex, first 16
+    chars, where normalizedPrompt = prompt.trim().toLowerCase() with every run of
+    whitespace collapsed to a single space, and paramSig is a stable, canonical
+    (key-sorted) JSON signature of the output-affecting generation params for that
+    mode (src/meshy/genParams.mjs). For mode "refine" the signature includes the
+    preview params it is built on, since a refined asset depends on the preview
+    mesh. Changing ANY generation param therefore yields a NEW key and never
+    silently serves stale bytes generated under different params.
+    (e.g. key(${JSON.stringify(CHECKPOINT_PROMPT)},"preview",<frozen sig>) = ${CHECKPOINT_KEY})
   - Default dir: ~/.cache/dream3d/meshy
   - Layout: <cacheDir>/<key>/<taskId>.glb , <taskId>.png , <taskId>.json (sidecar);
             <cacheDir>/<key>/meta.json — a human-readable directory marker
@@ -459,7 +484,7 @@ async function main() {
 
   const opts = parseArgs(argv);
   const normalizedPrompt = normalizePrompt(opts.prompt);
-  const key = deriveKey(opts.prompt, opts.mode);
+  const key = deriveKey(opts.prompt, opts.mode, paramSignature(opts.mode));
   const { cacheDir } = opts;
 
   console.error(`prompt: ${JSON.stringify(opts.prompt)}`);

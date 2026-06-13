@@ -20,8 +20,11 @@ A 3-step async flow, **one Meshy task per object**:
 
 Two generation modes:
 
-- `preview` — a fast, **UNtextured gray mesh**. This is what dream3d uses for the live demo.
+- `preview` — a fast, **UNtextured gray mesh**.
 - `refine` — a second pass that **adds texture** on top of a completed preview task.
+
+dream3d's asset pipeline runs **preview → refine** and returns the **textured refined GLB** (never
+the gray preview). The fixed submit params for both passes live in one place — `src/meshy/genParams.mjs`.
 
 > The whole flow is **minute-scale and asynchronous**. Design around that (see Gotchas).
 
@@ -49,10 +52,18 @@ Authorization: Bearer <key>
 Content-Type: application/json
 ```
 
-Body:
+Body (the params dream3d actually sends — see `src/meshy/genParams.mjs`):
 
 ```json
-{ "mode": "preview", "prompt": "<text>", "target_formats": ["glb"] }
+{
+  "mode": "preview",
+  "prompt": "<text>",
+  "target_formats": ["glb"],
+  "should_remesh": true,
+  "target_polycount": 300000,
+  "topology": "triangle",
+  "ai_model": "meshy-6"
+}
 ```
 
 Response — **HTTP 202**:
@@ -67,8 +78,12 @@ Response — **HTTP 202**:
 
 - `art_style` — **v2 ONLY accepts `"realistic"`.** Any other value returns **HTTP 400**
   with `{"message":"Invalid values: ArtStyle must be one of [realistic]"}`. **[VERIFIED 2026-06-13]**
-- `should_remesh`, `topology`, `target_polycount`, `symmetry_mode` — accepted per Meshy docs
-  to tune the output mesh. **[DOCUMENTED, UNVERIFIED]**
+- `should_remesh` (`true`), `target_polycount` (`300000`), `topology` (`"triangle"`), `ai_model`
+  (`"meshy-6"`) — accepted and effective. A preview submit with these produced a remeshed triangle
+  mesh of **293,083 triangles** (≤ the 300,000 target, 6,917 under), carried through to the refined
+  GLB. **[VERIFIED 2026-06-13]**
+- `symmetry_mode` — accepted per Meshy docs to tune the output mesh; not exercised here.
+  **[DOCUMENTED, UNVERIFIED]**
 
 ---
 
@@ -149,15 +164,28 @@ Authorization: Bearer <key>
 Content-Type: application/json
 ```
 
-Body:
+Body (the params dream3d actually sends — see `src/meshy/genParams.mjs`):
 
 ```json
-{ "mode": "refine", "preview_task_id": "<previewTaskId>" }
+{
+  "mode": "refine",
+  "preview_task_id": "<previewTaskId>",
+  "enable_pbr": true,
+  "remove_lighting": true,
+  "hd_texture": false,
+  "ai_model": "meshy-6",
+  "target_formats": ["glb"]
+}
 ```
 
 Submitting this body returns a **new task id** (HTTP 202, same `{ "result": "<taskId>" }` shape);
 poll and download it identically to a preview task.
 
+- `enable_pbr` (`true`), `remove_lighting` (`true`), `hd_texture` (`false`), `ai_model` (`"meshy-6"`)
+  — accepted and effective. The refined GLB **embeds PBR texture in the GLB itself**: one material
+  with a `baseColorTexture` plus metallic-roughness, normal, and emissive maps (4 embedded JPEG
+  images). The baked base-color texture carries **real color** (distinct hues — verified by extracting
+  it and by rendering the GLB through `src/render/headless.ts`), **not a gray mesh**. **[VERIFIED 2026-06-13]**
 - **Cost: 10 credits — HALF of a preview**, not more. (Earlier docs guessed "costs more"; live runs
   show refine is *cheaper* than the 20-credit preview.) **[VERIFIED 2026-06-13]**
 - **Timing: ~79s** to `SUCCEEDED` — comparable to a preview. **[VERIFIED 2026-06-13]**
@@ -200,7 +228,8 @@ Response:
 - **`model_urls.glb` is presigned and expires** — save the bytes, do not persist the URL.
 - **Generation is async and minute-scale.** For a live demo:
   - **cap objects** (4–6),
-  - **cache by prompt** (skip regenerating identical objects),
+  - **cache by prompt + mode + generation-param signature** (skip regenerating identical objects —
+    see the cache-key note below),
   - **limit concurrency** (≤ 3 in-flight submits),
   - **pre-generate a fallback GLB set** so a Meshy outage cannot kill the demo.
 - **Always poll, and handle `FAILED` / `CANCELED` / `EXPIRED` loudly** — never silently treat a
@@ -355,5 +384,27 @@ It reads the key from `config/local.json`, saves the GLB to `scripts/.out/smoke.
 **consumes ~20 Meshy credits per run.**
 
 For a higher-level, **cache-aware best-of-N** generator (submits several candidates, caches by
-prompt+mode, optional `refine` pass), see [`scripts/meshy-generate.mjs`](../scripts/meshy-generate.mjs)
-— run `node scripts/meshy-generate.mjs --help` for the full spec.
+prompt + mode + generation-param signature, optional `refine` pass), see
+[`scripts/meshy-generate.mjs`](../scripts/meshy-generate.mjs) — run `node scripts/meshy-generate.mjs --help`
+for the full spec.
+
+---
+
+## Param-aware disk cache key  [VERIFIED 2026-06-13]
+
+The dream3d disk cache (`~/.cache/dream3d/meshy/`, shared by the CLI and the pipeline provider via
+`src/meshy/cache.mjs`) keys each entry by:
+
+```
+key = sha256(normalizedPrompt + "::" + mode + "::" + paramSig).hex[:16]
+```
+
+`paramSig` is a stable, canonical (key-sorted) JSON signature of the **output-affecting generation
+params** for that mode (from `src/meshy/genParams.mjs`). For `mode == "refine"` the signature
+**includes the preview params** the refine was built on, because a refined asset depends on the
+preview mesh. Folding the params into the key means **changing any param yields a new key** and the
+cache never silently serves stale bytes generated under different params.
+
+> **This new formula invalidated the previously seeded cache.** Old entries were keyed by
+> `prompt + "::" + mode` only; under the param-aware key they are unreachable (a re-run regenerates
+> them under the new key). That is intended and acceptable.

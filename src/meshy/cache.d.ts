@@ -38,10 +38,12 @@ export interface DirMeta {
 
 export const DEFAULT_CACHE_DIR: string;
 export const CHECKPOINT_PROMPT: string;
+export const CHECKPOINT_PARAM_SIG: string;
 export const CHECKPOINT_KEY: string;
 
 export function normalizePrompt(prompt: string): string;
-export function deriveKey(prompt: string, mode: string): string;
+/** sha256(normalizedPrompt + "::" + mode + "::" + paramSig), first 16 hex chars. */
+export function deriveKey(prompt: string, mode: string, paramSig: string): string;
 export function assertKeySchemeIsStable(): void;
 
 export function serializeCache(value: unknown): string;

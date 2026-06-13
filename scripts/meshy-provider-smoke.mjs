@@ -2,9 +2,10 @@
 // meshy-provider-smoke.mjs — exercises the REAL cache-aware Meshy asset provider
 // (src/pipeline/meshyAssetProvider.ts), asserting a pure cache HIT.
 //
-// "a small ceramic mug" (preview) is already seeded in ~/.cache/dream3d/meshy, so
-// meshyAssetProvider.generate(...) MUST serve it from disk: zero network, and the
-// returned glbUrl must point to an existing .glb under the cache dir.
+// "a small ceramic mug" (refine) is already seeded in ~/.cache/dream3d/meshy, so
+// meshyAssetProvider.generate(...) (which runs preview -> refine on a miss) MUST
+// serve the refined GLB from disk: zero network, and the returned glbUrl must
+// point to an existing .glb under the cache dir.
 //
 // The provider is TypeScript (extensionless imports), so we load the real module
 // through the tsx ESM loader — NOT a copy of its logic — and call generate()

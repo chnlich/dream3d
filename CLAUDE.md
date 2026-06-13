@@ -7,7 +7,11 @@ Source of truth for the plan: `PLAN.md`. Verified Meshy API reference: `docs/mes
 Do **not** call the Meshy API directly. Use the internal generator (for ad-hoc
 best-of-N) or the pipeline asset provider (in the agent loop). Both share **one**
 cache module — `src/meshy/cache.mjs` (single source of truth; types in
-`cache.d.ts`) — so they read and write the same `~/.cache/dream3d/meshy/`.
+`cache.d.ts`) — so they read and write the same `~/.cache/dream3d/meshy/`. The
+fixed preview/refine submit params live in **one** typed module —
+`src/meshy/genParams.mjs` (types in `genParams.d.ts`) — read by both the CLI and
+the provider, and the cache key folds in a signature of them (see below), so the
+two paths submit identical jobs and never serve assets generated under stale params.
 
 ```
 node scripts/meshy-generate.mjs "<object prompt>" [--count N] [--mode preview|refine]
@@ -15,13 +19,13 @@ node scripts/meshy-generate.mjs "<object prompt>" [--count N] [--mode preview|re
 ```
 
 - Returns a JSON manifest on **stdout** (logs go to stderr) listing candidate GLB models — send one prompt, get several candidates to pick from.
-- **Cache-aware**: keyed by prompt + mode, so repeat runs are free (no API call, no credits). Cache lives in `~/.cache/dream3d/meshy/`.
+- **Cache-aware**: keyed by prompt + mode + a signature of the generation params (`src/meshy/genParams.mjs`), so repeat runs are free (no API call, no credits) and changing any param yields a new key. Cache lives in `~/.cache/dream3d/meshy/`. (The refine key's signature also includes the preview params, since a refined asset is built on the preview mesh.) This param-aware key **invalidated the prior seeded cache** — old `prompt::mode`-only entries are unreachable and re-generate under the new key; intended and acceptable.
 - `--add N` generates N **more** candidates and appends them to the cached pool (always generates, ignores existing for the decision, still writes to cache; N falls back to `--count` if omitted). `--rebuild` discards the cached entry for that prompt+mode (deletes its `<key>/` dir and index record), then regenerates `--count` from scratch.
 - Each cache dir carries a human-readable `<key>/meta.json` marker — `{ key, prompt, normalizedPrompt, mode }` — so a hash-named dir is identifiable without recomputing sha256. It is written on first touch (a cache hit backfills it; a miss/add/rebuild writes it alongside the generated candidates).
 - Run `node scripts/meshy-generate.mjs --help` for the **full** options, requirements, cost, cache behavior, and manifest schema.
 - Requires `config/local.json` at the repo root — `{ "meshyApiKey": "msy_..." }` (gitignored) — only when actually generating; a pure cache hit needs no key.
 
-**Pipeline provider**: `src/pipeline/meshyAssetProvider.ts` (`AssetProvider.generate(obj)`) is cache-aware over the same cache. On a hit it returns `{ glbUrl }` where **`glbUrl` is the local `.glb` filesystem path** (the headless renderer accepts a local path) with zero network and zero credits; on a miss it generates one preview candidate, persists it through the shared cache helpers, and returns its local path.
+**Pipeline provider**: `src/pipeline/meshyAssetProvider.ts` (`AssetProvider.generate(obj)`) is cache-aware over the same cache and runs **preview → refine**, returning the **TEXTURED refined GLB** (never the gray preview). On a hit it returns `{ glbUrl }` where **`glbUrl` is the local `.glb` filesystem path** of the refined model (the headless renderer accepts a local path) with zero network and zero credits; on a miss it submits a preview (poly-bounded mesh), then a refine (bakes PBR texture), persists the refined GLB through the shared cache helpers, and returns its local path. Verified live (2026-06-13) on "a small ceramic mug": refined GLB carried embedded PBR color and **293,083 triangles** (≤ the 300,000 target).
 
 ## Multi-angle scene capture
 

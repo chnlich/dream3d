@@ -5,6 +5,7 @@ import type { AssetProvider } from "./types";
 import type { PlannedObject } from "../scene/schema";
 import { createMeshyClient } from "../meshy/client";
 import { loadConfig } from "../config";
+import { PREVIEW_PARAMS, REFINE_PARAMS, paramSignature } from "../meshy/genParams.mjs";
 import type { CacheEntry, Candidate } from "../meshy/cache.mjs";
 import {
   DEFAULT_CACHE_DIR,
@@ -23,16 +24,22 @@ import {
 const POLL_INTERVAL_MS = 6000;
 const TIMEOUT_MS = 5 * 60 * 1000;
 
-// Cache-aware Meshy asset provider. A cache hit is served straight off disk with
-// ZERO network calls and ZERO Meshy credits; the returned glbUrl is the local
-// filesystem path of the chosen .glb (the headless renderer accepts a local path).
-// A miss generates a single preview candidate, persists it through the shared
-// cache helpers, and returns its local path. Refine mode is out of scope.
+// Cache-aware Meshy asset provider. The asset flow is preview -> refine: a fast
+// gray preview mesh (poly-bounded per PREVIEW_PARAMS), then a refine pass that
+// BAKES PBR texture onto it (REFINE_PARAMS). The provider persists and returns the
+// TEXTURED refined GLB, never the gray preview.
+//
+// The cache key is the refine-mode key (it folds in a signature of BOTH the
+// preview and refine params, since a refined asset depends on the preview mesh).
+// A cache hit is served straight off disk with ZERO network calls and ZERO Meshy
+// credits; the returned glbUrl is the local filesystem path of the refined .glb
+// (the headless renderer accepts a local path). A miss runs preview -> refine,
+// persists the refined GLB through the shared cache helpers, and returns its path.
 export const meshyAssetProvider: AssetProvider = {
   async generate(obj: PlannedObject): Promise<{ glbUrl: string }> {
-    const mode = "preview";
+    const mode = "refine";
     const cacheDir = DEFAULT_CACHE_DIR;
-    const key = deriveKey(obj.meshyPrompt, mode);
+    const key = deriveKey(obj.meshyPrompt, mode, paramSignature(mode));
     const normalizedPrompt = normalizePrompt(obj.meshyPrompt);
 
     const index = await readIndex(cacheDir);
@@ -50,32 +57,34 @@ export const meshyAssetProvider: AssetProvider = {
       }
     }
 
-    // MISS — load the key now (loud if missing) and generate one preview candidate.
+    // MISS — load the key now (loud if missing), then run preview -> refine.
     const client = createMeshyClient(loadConfig().meshyApiKey);
-    const taskId = await client.submitPreview(obj.meshyPrompt);
-    const task = await client.waitForTask(taskId, { pollIntervalMs: POLL_INTERVAL_MS, timeoutMs: TIMEOUT_MS });
-    const glbUrl = task.modelUrls.glb;
+    const previewTaskId = await client.submitPreview(obj.meshyPrompt, PREVIEW_PARAMS);
+    await client.waitForTask(previewTaskId, { pollIntervalMs: POLL_INTERVAL_MS, timeoutMs: TIMEOUT_MS });
+    const refineTaskId = await client.submitRefine(previewTaskId, REFINE_PARAMS);
+    const refined = await client.waitForTask(refineTaskId, { pollIntervalMs: POLL_INTERVAL_MS, timeoutMs: TIMEOUT_MS });
+    const glbUrl = refined.modelUrls.glb;
     if (!glbUrl) {
-      throw new Error(`Meshy task ${task.id} SUCCEEDED without model_urls.glb`);
+      throw new Error(`Meshy refine task ${refined.id} SUCCEEDED without model_urls.glb`);
     }
     const bytes = await client.downloadGlb(glbUrl);
 
     const dir = join(cacheDir, key);
     await mkdir(dir, { recursive: true });
-    const glbPath = join(dir, `${taskId}.glb`);
+    const glbPath = join(dir, `${refineTaskId}.glb`);
     await writeFile(glbPath, bytes);
 
     const candidate: Candidate = {
-      taskId,
+      taskId: refineTaskId,
       prompt: obj.meshyPrompt,
       mode,
       key,
-      status: task.status,
+      status: refined.status,
       savedAt: Math.floor(Date.now() / 1000),
       glb: glbPath,
       bytes: bytes.byteLength,
     };
-    await writeFile(join(dir, `${taskId}.json`), serializeCache(candidate));
+    await writeFile(join(dir, `${refineTaskId}.json`), serializeCache(candidate));
 
     const entry: CacheEntry = index[key] ?? { prompt: obj.meshyPrompt, mode, key, winner: null, candidates: [] };
     entry.candidates.push(candidate);

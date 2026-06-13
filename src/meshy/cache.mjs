@@ -16,9 +16,16 @@ import { createHash } from "node:crypto";
 
 export const DEFAULT_CACHE_DIR = join(homedir(), ".cache", "dream3d", "meshy");
 
-// Self-test anchor: this key MUST line up with the seeded cache on disk.
+// Drift-guard anchor for the key FORMULA (not the live params). CHECKPOINT_PARAM_SIG
+// is a FROZEN literal that intentionally does NOT read genParams.mjs: changing a
+// real generation param is expected to move real keys, but must not trip this
+// check. It just pins normalize + "::"-join + sha256 + slice(0,16). (It happens to
+// equal paramSignature("preview") for the params shipped today — illustrative of
+// the format — but it is hard-frozen here regardless.)
 export const CHECKPOINT_PROMPT = "a small wooden stool";
-export const CHECKPOINT_KEY = "41b60876785e9b0c";
+export const CHECKPOINT_PARAM_SIG =
+  '{"ai_model":"meshy-6","should_remesh":true,"target_polycount":300000,"topology":"triangle"}';
+export const CHECKPOINT_KEY = "80b6483c5f285dba";
 
 // --- key / prompt normalization -------------------------------------------
 
@@ -26,18 +33,26 @@ export function normalizePrompt(prompt) {
   return prompt.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export function deriveKey(prompt, mode) {
+// Key = sha256(normalizedPrompt + "::" + mode + "::" + paramSig), first 16 hex
+// chars. paramSig is a stable, canonical signature of the output-affecting
+// generation params for that mode (see genParams.paramSignature) — folding it in
+// means changing any param yields a new key and never silently serves stale bytes.
+export function deriveKey(prompt, mode, paramSig) {
+  if (typeof paramSig !== "string" || paramSig.length === 0) {
+    throw new Error(`deriveKey requires a non-empty paramSig string (got ${JSON.stringify(paramSig)})`);
+  }
   const normalized = normalizePrompt(prompt);
-  return createHash("sha256").update(`${normalized}::${mode}`).digest("hex").slice(0, 16);
+  return createHash("sha256").update(`${normalized}::${mode}::${paramSig}`).digest("hex").slice(0, 16);
 }
 
-// Guards against the key scheme silently drifting away from the seeded cache.
+// Guards against the key DERIVATION FORMULA silently drifting. Pinned against a
+// frozen prompt + mode + param signature (see CHECKPOINT_PARAM_SIG).
 export function assertKeySchemeIsStable() {
-  const got = deriveKey(CHECKPOINT_PROMPT, "preview");
+  const got = deriveKey(CHECKPOINT_PROMPT, "preview", CHECKPOINT_PARAM_SIG);
   if (got !== CHECKPOINT_KEY) {
     throw new Error(
-      `Cache key scheme drifted: key("${CHECKPOINT_PROMPT}","preview")=${got}, expected ${CHECKPOINT_KEY}. ` +
-        `Newly generated keys would not line up with the seeded cache.`,
+      `Cache key scheme drifted: key("${CHECKPOINT_PROMPT}","preview",<frozen sig>)=${got}, expected ${CHECKPOINT_KEY}. ` +
+        `The key derivation formula changed; newly generated keys would not line up with previously cached entries.`,
     );
   }
 }

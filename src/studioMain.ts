@@ -10,6 +10,20 @@
 import { SceneViewer } from "./viewer/SceneViewer";
 import type { GenerateRequest, GenerateResponse, Pass } from "./api/contract";
 import type { SceneState } from "./scene/schema";
+import scenePresetsJson from "../config/scene-presets.json";
+
+// Committed preset prompts (config/scene-presets.json), surfaced as the "Preset" dropdown. Typed
+// locally so the populate/lookup code is explicit regardless of the JSON module's inferred type.
+interface ScenePreset {
+  id: string;
+  label: string;
+  prompt: string;
+}
+const scenePresets = scenePresetsJson as ScenePreset[];
+const DEFAULT_PRESET_ID = "sc-demo";
+
+// amend/review loop not wired yet — pinned to 0; re-expose an input when it ships.
+const AMEND_ROUNDS = 0;
 
 // Resolve a required element by id, throwing loudly if it is missing or the wrong tag (fail fast — a
 // missing node means studio.html and this module drifted out of sync).
@@ -23,7 +37,7 @@ function requireEl<T extends Element>(id: string, ctor: new () => T): T {
 
 const canvas = requireEl("viewer", HTMLCanvasElement);
 const promptInput = requireEl("prompt", HTMLInputElement);
-const amendInput = requireEl("amend-rounds", HTMLInputElement);
+const presetSelect = requireEl("preset", HTMLSelectElement);
 const generateBtn = requireEl("generate", HTMLButtonElement);
 const statusEl = requireEl("status", HTMLElement);
 const bannerEl = requireEl("banner", HTMLElement);
@@ -50,6 +64,16 @@ function showBanner(text: string): void {
 function clearBanner(): void {
   bannerEl.textContent = "";
   bannerEl.hidden = true;
+}
+
+// Fill the prompt input with a preset's prompt (it stays freely editable afterwards). Fail loud on an
+// unknown id — that only happens if scene-presets.json and DEFAULT_PRESET_ID drift apart.
+function applyPreset(id: string): void {
+  const preset = scenePresets.find((p) => p.id === id);
+  if (!preset) {
+    throw new Error(`scene-presets.json has no preset with id "${id}"`);
+  }
+  promptInput.value = preset.prompt;
 }
 
 // Rebuild the side panel from a pass's objects: one row per object showing id · label · status · glbUrl.
@@ -113,14 +137,11 @@ async function onGenerate(): Promise<void> {
     setStatus("enter a prompt");
     return;
   }
-  const parsedRounds = Number.parseInt(amendInput.value, 10);
-  const amendRounds = Number.isNaN(parsedRounds) ? 0 : Math.max(0, parsedRounds);
-
   generateBtn.disabled = true;
   setStatus("Generating…");
   clearBanner();
   try {
-    const body: GenerateRequest = { prompt, amendRounds };
+    const body: GenerateRequest = { prompt, amendRounds: AMEND_ROUNDS };
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -155,3 +176,15 @@ promptInput.addEventListener("keydown", (e) => {
 });
 prevBtn.addEventListener("click", () => void renderPass(current - 1));
 nextBtn.addEventListener("click", () => void renderPass(current + 1));
+
+// Populate the preset dropdown, default-select the demo, and pre-fill its prompt so one click of
+// Generate runs the demo. Changing the selection refills the prompt (which stays freely editable).
+for (const preset of scenePresets) {
+  const option = document.createElement("option");
+  option.value = preset.id;
+  option.textContent = preset.label;
+  presetSelect.append(option);
+}
+presetSelect.value = DEFAULT_PRESET_ID;
+applyPreset(presetSelect.value);
+presetSelect.addEventListener("change", () => applyPreset(presetSelect.value));

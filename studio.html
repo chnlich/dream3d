@@ -33,10 +33,12 @@
         border-bottom: 1px solid #e1e5ea;
       }
       input,
+      select,
       button {
         font: inherit;
       }
-      input {
+      input,
+      select {
         padding: 6px 8px;
         border: 1px solid #c7ccd1;
         border-radius: 6px;
@@ -45,13 +47,10 @@
         flex: 1 1 auto;
         min-width: 0;
       }
-      .amend-label {
+      .preset-label {
         font-size: 13px;
         color: #52606d;
         white-space: nowrap;
-      }
-      .amend {
-        width: 56px;
       }
       button {
         padding: 6px 14px;
@@ -188,11 +187,11 @@
   </head>
   <body>
     <header class="controls">
-      <input id="prompt" type="text" placeholder="Describe a scene…" />
-      <label class="amend-label">
-        amend
-        <input id="amend-rounds" class="amend" type="number" value="2" min="0" step="1" />
+      <label class="preset-label">
+        Preset
+        <select id="preset"></select>
       </label>
+      <input id="prompt" type="text" placeholder="Describe a scene…" />
       <button id="generate">Generate</button>
       <span id="status" class="status"></span>
     </header>

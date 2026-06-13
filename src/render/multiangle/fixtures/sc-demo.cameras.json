@@ -1,0 +1,7 @@
+[
+  { "name": "front", "position": [0, 2.0, 8.0], "target": [0, 1.0, 0] },
+  { "name": "three_quarter_left", "position": [-3.5, 2.6, 7.5], "target": [0, 1.0, 0] },
+  { "name": "three_quarter_right", "position": [4.0, 2.6, 7.5], "target": [0, 1.0, 0] },
+  { "name": "side_right", "position": [8.5, 1.8, 0], "target": [0, 1.0, 0] },
+  { "name": "top_down", "position": [0, 11.0, 2.5], "target": [0, 0.4, 0] }
+]

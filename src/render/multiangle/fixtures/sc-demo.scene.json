@@ -1,0 +1,8 @@
+{
+  "room": { "width": 8, "depth": 8, "height": 4 },
+  "objects": [
+    { "glbUrl": "/tmp/sc-demo/marine.glb", "position": [0, 0.95, -0.3], "rotationYDeg": 180, "scale": 1.0 },
+    { "glbUrl": "/tmp/sc-demo/zergling.glb", "position": [-2.4, 0.49, 0.4], "rotationYDeg": 155, "scale": 0.8 },
+    { "glbUrl": "/tmp/sc-demo/hydralisk.glb", "position": [2.4, 1.33, 0.1], "rotationYDeg": 205, "scale": 1.4 }
+  ]
+}

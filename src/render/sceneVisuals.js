@@ -90,6 +90,25 @@ export function slotSeatOffset(scaledMin, scaledCenter, approxY) {
   return [-scaledCenter[0], -(scaledMin[1] + approxY / 2), -scaledCenter[2]];
 }
 
+// Stand-in material params for an object that is NOT a successfully-loaded GLB, so a
+// pending / missing / failed asset still shows in the frame as a clearly-labeled box
+// instead of a hole — or, when a load throws, instead of a blanked scene. The two
+// states read differently at a glance: a still-working PENDING object is a calm,
+// translucent blue ("generating…"), while a FAILED / un-loadable asset is an opaque
+// alarm red ("this one broke"). Both renderers (SceneViewer.ts + scene-page.js) import
+// these so the live viewer and the headless critic mark a broken asset identically.
+// Plain data, no THREE dependency — each renderer feeds it into its own MeshStandardMaterial.
+export const STANDIN_PENDING = { color: 0x4dabf7, opacity: 0.85, transparent: true, roughness: 0.6, metalness: 0.05 };
+export const STANDIN_FAILED = { color: 0xff5a5a, opacity: 1.0, transparent: false, roughness: 0.5, metalness: 0.0 };
+
+// Pick the stand-in appearance for a scene/schema.ts ObjectStatus. ONLY "failed" reads
+// as the red alarm marker; every other non-ready state (pending, or an unknown future
+// status) reads as the blue "working" placeholder. A runtime GLB load failure is its own
+// case the caller handles by passing STANDIN_FAILED directly.
+export function standInAppearance(status) {
+  return status === "failed" ? STANDIN_FAILED : STANDIN_PENDING;
+}
+
 // Canonical 3/4 front-corner viewing ANGLE for the default camera: the azimuth is
 // swung from the +Z scene front toward +X, raised to this elevation above the
 // floor. This is the angle the curated demo has always been framed from; what

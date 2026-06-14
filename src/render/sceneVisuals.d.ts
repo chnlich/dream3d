@@ -53,3 +53,20 @@ export function defaultCameraFraming(room: RoomDims, bounds?: ContentBounds | nu
 
 /** Set Scene-level fog + background (the shared battlefield atmosphere). Client-viewer use. */
 export function applyAtmosphere(scene: Scene): void;
+
+/** MeshStandardMaterial params for a placeholder box (plain data, no THREE dependency). */
+export interface StandInAppearance {
+  color: number;
+  opacity: number;
+  transparent: boolean;
+  roughness: number;
+  metalness: number;
+}
+
+/** Blue translucent "still working" placeholder appearance (pending / unknown status). */
+export const STANDIN_PENDING: StandInAppearance;
+/** Red opaque "this asset failed" placeholder appearance (failed status / load failure). */
+export const STANDIN_FAILED: StandInAppearance;
+
+/** Stand-in appearance for an ObjectStatus: "failed" -> red alarm, anything else -> blue working. */
+export function standInAppearance(status: string): StandInAppearance;

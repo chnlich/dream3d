@@ -86,15 +86,20 @@ export class SceneViewer {
     // them in declared order. Promise.all rejects on the first failed ready-GLB load (fail loud).
     const loader = new GLTFLoader();
     const nodes = await Promise.all(scene.objects.map((obj) => this.buildObjectNode(obj, loader)));
+    // Union AABB of just the placed OBJECTS (Box3.expandByObject walks each node's
+    // world transforms) — NOT the floor/lights — so the default camera frames the
+    // actual content and it fills the frame at any object scale.
+    const contentBox = new THREE.Box3();
     scene.objects.forEach((obj, i) => {
       const placed = this.normalizeAndPlace(nodes[i], obj);
       this.enableShadows(placed);
       root.add(placed);
+      contentBox.expandByObject(placed);
     });
 
     this.scene.add(root);
     this.contentRoot = root;
-    this.frameRoom(scene.room);
+    this.frameScene(scene.room, scene.objects.length > 0 ? contentBox : null);
     this.requestRender();
   }
 
@@ -217,9 +222,18 @@ export class SceneViewer {
     return pivot;
   }
 
-  // Default 3/4 framing from the shared visual recipe; apply to the camera + orbit target.
-  private frameRoom(room: Room): void {
-    const f = defaultCameraFraming(room);
+  // Default 3/4 framing from the shared visual recipe, fit to the scene CONTENT (the
+  // union AABB of the placed objects) so a small object or a tight cluster fills the
+  // frame instead of floating in an oversized room. `contentBox` is null only for an
+  // object-less scene, where the framing falls back to the room box.
+  private frameScene(room: Room, contentBox: THREE.Box3 | null): void {
+    const bounds = contentBox
+      ? {
+          min: [contentBox.min.x, contentBox.min.y, contentBox.min.z] as [number, number, number],
+          max: [contentBox.max.x, contentBox.max.y, contentBox.max.z] as [number, number, number],
+        }
+      : null;
+    const f = defaultCameraFraming(room, bounds);
     this.camera.position.set(...f.position);
     this.controls.target.set(...f.target);
     this.camera.updateProjectionMatrix();

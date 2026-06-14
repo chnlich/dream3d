@@ -18,6 +18,12 @@ export interface CameraFraming {
   target: [number, number, number];
 }
 
+/** A world-space axis-aligned bounding box as plain arrays (min/max corners). */
+export interface ContentBounds {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
 export const CLEAR_COLOR: number;
 export const CAMERA_FOV: number;
 export const CAMERA_NEAR: number;
@@ -38,7 +44,12 @@ export function slotSeatOffset(
   approxY: number,
 ): [number, number, number];
 
-export function defaultCameraFraming(room: RoomDims): CameraFraming;
+/**
+ * Default 3/4 framing for the viewer/headless default camera. Frames the scene
+ * CONTENT when `bounds` (the placed objects' world AABB, floor excluded) is given,
+ * otherwise falls back to framing the `room` box. Pure; returns spreadable arrays.
+ */
+export function defaultCameraFraming(room: RoomDims, bounds?: ContentBounds | null): CameraFraming;
 
 /** Set Scene-level fog + background (the shared battlefield atmosphere). Client-viewer use. */
 export function applyAtmosphere(scene: Scene): void;

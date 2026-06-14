@@ -65,9 +65,9 @@ async function buildScene() {
 
   addLights(scene);
   addRoom(scene, input.room);
-  await addObjects(scene, input.objects);
+  const placed = await addObjects(scene, input.objects);
 
-  camera = makeCamera(input, opts);
+  camera = makeCamera(input, opts, placed);
 
   // Warm up ONCE: a single render (then cross one animation frame) uploads every
   // GLB texture to the GPU and pays the first-frame cost here, so each later
@@ -102,17 +102,22 @@ async function addObjects(scene, objects) {
   // Promise.all rejects on the first failed GLB load (fail loud).
   const loader = new GLTFLoader();
   const nodes = await Promise.all(objects.map((obj, i) => buildObjectNode(obj, loader, i)));
+  // Collect the placed OBJECT nodes (not the floor/lights) so the default camera can
+  // frame their union AABB — see makeCamera.
+  const placed = [];
   objects.forEach((obj, i) => {
     const node = nodes[i];
     if (obj.approxSize) {
-      placeNormalized(scene, node, obj);
+      placed.push(placeNormalized(scene, node, obj));
     } else {
       node.scale.setScalar(obj.scale);
       node.rotation.y = ((obj.rotationYDeg ?? 0) * Math.PI) / 180;
       node.position.set(obj.position[0], obj.position[1], obj.position[2]);
       scene.add(node);
+      placed.push(node);
     }
   });
+  return placed;
 }
 
 // Build a single object's node — a loaded GLB scene graph or a built-in primitive
@@ -166,6 +171,7 @@ function placeNormalized(scene, node, obj) {
   pivot.rotation.y = ((obj.rotationYDeg ?? 0) * Math.PI) / 180;
   pivot.position.set(obj.position[0], obj.position[1], obj.position[2]);
   scene.add(pivot);
+  return pivot;
 }
 
 function primitiveMaterial(obj, index) {
@@ -173,15 +179,23 @@ function primitiveMaterial(obj, index) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05 });
 }
 
-function makeCamera(input, opts) {
+function makeCamera(input, opts, placed) {
   const camera = new THREE.PerspectiveCamera(CAMERA_FOV, opts.width / opts.height, CAMERA_NEAR, CAMERA_FAR);
   if (input.camera) {
     camera.position.set(input.camera.position[0], input.camera.position[1], input.camera.position[2]);
     camera.lookAt(new THREE.Vector3(input.camera.target[0], input.camera.target[1], input.camera.target[2]));
     return camera;
   }
-  // Default: a 3/4 view that frames the whole room from a front corner.
-  const f = defaultCameraFraming(input.room);
+  // Default: a 3/4 view fit to the actual scene CONTENT (the union AABB of the placed
+  // objects), falling back to the room box for an object-less scene — the same
+  // content-fit framing the live viewer applies (shared defaultCameraFraming).
+  const box = new THREE.Box3();
+  for (const node of placed) {
+    box.expandByObject(node);
+  }
+  const bounds =
+    placed.length > 0 ? { min: [box.min.x, box.min.y, box.min.z], max: [box.max.x, box.max.y, box.max.z] } : null;
+  const f = defaultCameraFraming(input.room, bounds);
   camera.position.set(...f.position);
   camera.lookAt(new THREE.Vector3(...f.target));
   return camera;

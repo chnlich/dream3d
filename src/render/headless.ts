@@ -1,9 +1,11 @@
 // Reusable headless render harness for dream3d.
 //
 // Renders a small, self-contained scene description to a PNG using headless
-// Chromium + software WebGL (SwiftShader). This is the server-side capture path
-// that lets the agent loop screenshot a scene and feed it to the Opus vision
-// critic. See docs/headless-render.md for the host setup and
+// Chromium. By default it drives the real GPU (ANGLE -> D3D12; the discrete
+// NVIDIA GPU on this WSL host) and falls back — loudly — to software WebGL
+// (SwiftShader) when full Chromium is unavailable. This is the server-side
+// capture path that lets the agent loop screenshot a scene and feed it to the
+// Opus vision critic. See docs/headless-render.md for the host setup and
 // the SceneState integration notes.
 //
 // Design:
@@ -115,15 +117,32 @@ export interface RenderSession {
 
 const DEFAULTS = { width: 1024, height: 768, clearColor: 0x1f262e, timeoutMs: 30_000 };
 
-// Chromium flags that make WebGL work in headless Chromium on a GPU-less WSL host.
-// SwiftShader is Chromium's software GL backend; recent Chromium gates it behind
-// --enable-unsafe-swiftshader. --no-sandbox is required under WSL.
+// Software-WebGL (SwiftShader) launch flags — the portable fallback used when the
+// real GPU path is unavailable or disabled. SwiftShader is Chromium's software GL
+// backend; recent Chromium gates it behind --enable-unsafe-swiftshader.
+// --no-sandbox is required under WSL. Kept under the original export name for
+// back-compat with existing importers; the GPU flags live in GPU_LAUNCH_ARGS below.
 export const CHROMIUM_LAUNCH_ARGS = [
   "--no-sandbox",
   "--use-gl=angle",
   "--use-angle=swiftshader",
   "--enable-unsafe-swiftshader",
   "--disable-dev-shm-usage",
+];
+
+// Real-GPU launch flags: ANGLE -> D3D12 on this WSL host. Empirically (see the GPU
+// probe + docs/headless-render.md) this is the ONLY combination that engages the
+// discrete NVIDIA RTX 3060 here — Vulkan, EGL, and desktop GL all fell back to
+// SwiftShader. Requires FULL Chromium (channel:"chromium"); the default
+// headless_shell always falls back to software. Pairs with the /usr/lib/wsl/lib
+// LD_LIBRARY_PATH prepend + MESA_D3D12_DEFAULT_ADAPTER_NAME set before launch.
+export const GPU_LAUNCH_ARGS = [
+  "--no-sandbox",
+  "--disable-dev-shm-usage",
+  "--headless=new",
+  "--ignore-gpu-blocklist",
+  "--use-gl=angle",
+  "--use-angle=gl",
 ];
 
 // Host location where Chromium's system libraries were extracted (see docs).
@@ -133,6 +152,17 @@ const HOST_LIB_DIRS = [
   join(homedir(), "tools", "playwright-libs", "ubuntu2204", "usr", "lib", "x86_64-linux-gnu"),
   join(homedir(), "tools", "playwright-libs", "ubuntu2204", "lib", "x86_64-linux-gnu"),
 ];
+
+// WSL's GPU userspace libraries (libd3d12, libdxcore, the Mesa d3d12 Gallium
+// driver, …). For the GPU path this MUST be prepended FIRST onto the browser
+// child's LD_LIBRARY_PATH so ANGLE's D3D12 backend can load the GPU stack; the
+// software path does not need it.
+const WSL_GPU_LIB_DIR = "/usr/lib/wsl/lib";
+
+// Steers Mesa's d3d12 Gallium driver to the discrete RTX 3060; omitting it picks
+// the AMD iGPU (also GPU, slightly slower). Set in-process before launch.
+const MESA_ADAPTER_ENV = "MESA_D3D12_DEFAULT_ADAPTER_NAME";
+const MESA_ADAPTER_NVIDIA = "NVIDIA";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -232,14 +262,75 @@ export async function createRenderSession(input: RenderInput, options: RenderOpt
 }
 
 /**
- * Launch a Chromium browser configured for headless software-WebGL rendering on
- * this host. Reuse one instance across many renderToPng calls (pass it via
- * RenderOptions.browser) and close it when done.
+ * Launch a Chromium browser for headless rendering on this host. By default it
+ * targets the real GPU (ANGLE -> D3D12 on the discrete NVIDIA GPU) via FULL
+ * Chromium (channel:"chromium" + GPU_LAUNCH_ARGS); if that throws — e.g. full
+ * Chromium is not installed — it warns LOUDLY and falls back to the software
+ * (SwiftShader) path. Set DREAM3D_HEADLESS_GPU=0 to skip the GPU attempt entirely
+ * (portability / debug escape hatch). After launch it logs the live WebGL renderer
+ * string so logs show which backend engaged. Reuse one instance across many
+ * renderToPng calls (pass it via RenderOptions.browser) and close it when done.
  */
 export async function launchBrowser(): Promise<any> {
-  ensureLibraryPath();
   const chromium = await resolveChromium();
-  return chromium.launch({ headless: true, args: CHROMIUM_LAUNCH_ARGS });
+  const browser = await launchConfiguredBrowser(chromium);
+  await logWebglRenderer(browser);
+  return browser;
+}
+
+// Picks GPU vs software and performs the actual chromium.launch. Default path:
+// set up the GPU env (LD_LIBRARY_PATH prepend + MESA adapter) and launch full
+// Chromium with the GPU flags; on failure warn loudly and launch the software
+// path. DREAM3D_HEADLESS_GPU=0 forces software up front. Throws only if the
+// software launch also fails (i.e. both paths are unavailable).
+async function launchConfiguredBrowser(chromium: any): Promise<any> {
+  if (process.env.DREAM3D_HEADLESS_GPU === "0") {
+    ensureLibraryPath(false);
+    return chromium.launch({ headless: true, args: CHROMIUM_LAUNCH_ARGS });
+  }
+  ensureLibraryPath(true);
+  setMesaAdapter();
+  try {
+    return await chromium.launch({ channel: "chromium", headless: true, args: GPU_LAUNCH_ARGS });
+  } catch (error) {
+    console.warn(
+      `[headless] GPU Chromium unavailable (${(error as Error).message}); falling back to SwiftShader software render`,
+    );
+    return chromium.launch({ headless: true, args: CHROMIUM_LAUNCH_ARGS });
+  }
+}
+
+// MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA steers Mesa's d3d12 driver to the discrete
+// RTX 3060 (omitting it picks the AMD iGPU). Respect a value the user already set.
+function setMesaAdapter(): void {
+  if (!process.env[MESA_ADAPTER_ENV]) {
+    process.env[MESA_ADAPTER_ENV] = MESA_ADAPTER_NVIDIA;
+  }
+}
+
+// Diagnostic (permanent, for auditability): open a throwaway page, read the live
+// WebGL UNMASKED_RENDERER, and log it so it is visible in logs whether the GPU
+// (ANGLE -> D3D12 (NVIDIA ...)) or the SwiftShader software backend engaged. A
+// failure to read it must not break an otherwise-working browser, so it is logged
+// rather than thrown.
+async function logWebglRenderer(browser: any): Promise<void> {
+  let page: any = null;
+  try {
+    page = await browser.newPage();
+    const renderer = await page.evaluate(() => {
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) return "no WebGL2 context";
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    });
+    console.log(`[headless] WebGL renderer: ${renderer}`);
+  } catch (error) {
+    console.warn(`[headless] could not read WebGL renderer for diagnostics: ${(error as Error).message}`);
+  } finally {
+    if (page) {
+      await page.close();
+    }
+  }
 }
 
 /** Throws if `stats` indicates a blank/degenerate frame. Shared by the smoke script. */
@@ -279,13 +370,19 @@ async function resolveChromium(): Promise<any> {
   throw new Error(`Could not load Playwright. Tried:\n  ${errors.join("\n  ")}\nSee docs/headless-render.md for setup.`);
 }
 
-function ensureLibraryPath(): void {
-  const current = process.env.LD_LIBRARY_PATH ?? "";
-  const parts = current.split(":").filter(Boolean);
+// Prepend the dirs the browser child needs onto LD_LIBRARY_PATH, in-process,
+// before launch (the child inherits it; Node itself does not need them). Both
+// paths get the extracted playwright-libs system libs; the GPU path additionally
+// prepends WSL_GPU_LIB_DIR FIRST so ANGLE's D3D12 backend finds the GPU stack.
+function ensureLibraryPath(gpu: boolean): void {
+  // Front-of-path priority order. unshift below reverses, so iterate in reverse
+  // to land this exact order at the front (WSL GPU libs first when gpu).
+  const wanted = (gpu ? [WSL_GPU_LIB_DIR, ...HOST_LIB_DIRS] : HOST_LIB_DIRS).filter((dir) => existsSync(dir));
+  const parts = (process.env.LD_LIBRARY_PATH ?? "").split(":").filter(Boolean);
   let changed = false;
-  for (const dir of HOST_LIB_DIRS) {
-    if (existsSync(dir) && !parts.includes(dir)) {
-      parts.unshift(dir);
+  for (let i = wanted.length - 1; i >= 0; i--) {
+    if (!parts.includes(wanted[i])) {
+      parts.unshift(wanted[i]);
       changed = true;
     }
   }

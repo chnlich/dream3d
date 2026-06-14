@@ -4,15 +4,16 @@ This documents the de-risking spike for dream3d's **#1 risk**: rendering a three
 scene to a PNG **server-side**, so the agent loop can screenshot a scene and feed it
 to the Opus vision critic (the scene-review step of the agent loop).
 
-**Result: proven.** Headless Chromium gets a real **WebGL 2.0** context on this
-GPU-less WSL host via **SwiftShader** (software GL) and renders a lit, multi-object
-scene to a non-blank PNG. `node scripts/render-smoke.mjs` produces
-`scripts/.out/render-smoke.png` (1024×768, ~46 KiB) in ~0.9 s.
+**Result: proven.** Headless Chromium gets a real **WebGL 2.0** context and renders a
+lit, multi-object scene to a non-blank PNG. By **default** it now drives the **real
+GPU** — ANGLE → D3D12 on the discrete **NVIDIA RTX 3060** — and falls back **loudly**
+to **SwiftShader** (software GL) when full Chromium is unavailable. `node
+scripts/render-smoke.mjs` produces `scripts/.out/render-smoke.png` (1024×768, ~70 KiB).
 
 ```
 ┌───────────────┐   RenderInput    ┌──────────────────┐  http://127.0.0.1  ┌───────────────────┐
 │ agent loop /  │ ───────────────▶ │ renderToPng()    │ ─────────────────▶ │ headless Chromium │
-│ render-smoke  │                  │ (src/render/     │   page + three.js  │ + SwiftShader GL  │
+│ render-smoke  │                  │ (src/render/     │   page + three.js  │ + GPU / SW WebGL  │
 │               │ ◀─────────────── │  headless.ts)    │ ◀───────────────── │ canvas.toDataURL  │
 └───────────────┘   PNG Buffer     └──────────────────┘   data:image/png   └───────────────────┘
 ```
@@ -21,11 +22,11 @@ scene to a non-blank PNG. `node scripts/render-smoke.mjs` produces
 
 | | |
 |---|---|
-| Host | Ubuntu 22.04.5 LTS (jammy), x86_64, WSL2, **no GPU** |
+| Host | Ubuntu 22.04.5 LTS (jammy), x86_64, WSL2; **NVIDIA RTX 3060 Laptop GPU** (+ AMD Radeon iGPU) via WSLg |
 | Node | v22.22.3 (strips TypeScript types natively → a `.mjs` can `import` the `.ts` harness) |
-| Playwright | 1.60.0 → Chromium **148** (`chrome-headless-shell`) |
+| Playwright | 1.60.0 → Chromium **1223**: full `chromium` (GPU path) + `chromium_headless_shell` (software fallback) |
 | three.js | 0.170.0 (vendored in `src/render/vendor/three`) |
-| WebGL | `WebGL 2.0 (OpenGL ES 3.0 Chromium)` via ANGLE + SwiftShader (software) |
+| WebGL | `WebGL 2.0 (OpenGL ES 3.0 Chromium)` — default **ANGLE → D3D12 (NVIDIA RTX 3060)**; fallback ANGLE + SwiftShader (software) |
 
 ---
 
@@ -59,8 +60,15 @@ back to `~/tools/playwright/node_modules/playwright`.
 
 ```bash
 ~/tools/playwright/node_modules/.bin/playwright install chromium
-# downloads chrome-headless-shell into ~/.cache/ms-playwright
+# installs BOTH builds into ~/.cache/ms-playwright:
+#   chromium-<rev>                FULL Chromium — required by the GPU path (channel:"chromium")
+#   chromium_headless_shell-<rev> the software-fallback / legacy-headless build
 ```
+
+> **The GPU path needs the full Chromium.** `launchBrowser()` launches with
+> `channel:"chromium"`, which resolves to `chromium-<rev>`. The default headless
+> shell *always* falls back to SwiftShader, so without the full build you only get
+> the software path (the loud fallback covers its absence, but GPU won't engage).
 
 > `playwright install --with-deps chromium` would also install the system
 > libraries, **but `--with-deps` runs `apt-get` via `sudo`** and this host has no
@@ -94,9 +102,44 @@ LD_LIBRARY_PATH=~/tools/playwright-libs/ubuntu2204/usr/lib/x86_64-linux-gnu:\
   node scripts/render-smoke.mjs
 ```
 
-### Chromium launch flags (the WebGL-on-WSL bit)
+### Chromium launch flags + GPU/software selection
 
-`CHROMIUM_LAUNCH_ARGS` in `headless.ts`:
+`launchBrowser()` in `headless.ts` chooses the backend at launch:
+
+**Default — real GPU (ANGLE → D3D12 on the NVIDIA RTX 3060).** It launches the
+**full** Chromium (`channel:"chromium"`, new headless) with `GPU_LAUNCH_ARGS`:
+
+```
+--no-sandbox                 # required under WSL
+--disable-dev-shm-usage      # avoid small /dev/shm in containers/WSL
+--headless=new               # the new headless mode (the GPU-capable one)
+--ignore-gpu-blocklist       # WSL's GPU is blocklisted by default; override it
+--use-gl=angle               # GL via ANGLE
+--use-angle=gl               # ANGLE backend = desktop GL over the WSL D3D12 stack
+```
+
+Two pieces of env are set **in-process before launch** (the spawned browser child
+inherits them; Node itself does not need them):
+
+- **`LD_LIBRARY_PATH`** — `/usr/lib/wsl/lib` is **prepended first** (WSL's GPU
+  userspace: `libd3d12`, `libdxcore`, the Mesa d3d12 Gallium driver) ahead of the
+  extracted playwright-libs dirs, so ANGLE's D3D12 backend can find the GPU stack.
+- **`MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`** — steers Mesa's d3d12 driver to the
+  discrete RTX 3060. Omit it and Mesa picks the AMD iGPU (also GPU, slightly slower).
+  An existing value is respected (not overwritten).
+
+This combination is the **only** one that engages the real GPU on this box — Vulkan,
+EGL, and desktop GL (`--use-gl=desktop`) all silently fell back to SwiftShader (see
+the GPU probe). When it works, `UNMASKED_RENDERER_WEBGL` reads
+`ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 3060 Laptop GPU), OpenGL 4.2)`.
+`launchBrowser()` logs this string after every launch (a `[headless] WebGL renderer: …`
+line) so logs always show which backend engaged.
+
+**Loud fallback — software (SwiftShader).** If the GPU launch throws (e.g. full
+Chromium isn't installed → Playwright can't resolve `channel:"chromium"`),
+`launchBrowser()` emits a loud `console.warn` (`[headless] GPU Chromium unavailable
+(…); falling back to SwiftShader software render`) and launches the software path with
+`CHROMIUM_LAUNCH_ARGS` (kept under its original export name for back-compat):
 
 ```
 --no-sandbox                 # required under WSL
@@ -106,13 +149,19 @@ LD_LIBRARY_PATH=~/tools/playwright-libs/ubuntu2204/usr/lib/x86_64-linux-gnu:\
 --disable-dev-shm-usage      # avoid small /dev/shm in containers/WSL
 ```
 
+Only if the software launch *also* fails does `launchBrowser()` throw.
+
+**Escape hatch — `DREAM3D_HEADLESS_GPU=0`.** Set this to skip the GPU attempt entirely
+and go straight to the software path (portability / debugging). Unset (the default)
+attempts GPU first.
+
 ---
 
 ## What the harness is
 
 | File | Role |
 |---|---|
-| `src/render/headless.ts` | Reusable API: `renderToPng(input)`, `renderSceneToPng(input)`, `launchBrowser()`, `assertNonBlank(stats)`, `CHROMIUM_LAUNCH_ARGS`, and the `RenderInput` type. Runs a zero-dependency local HTTP server (page + vendored three + GLB assets), drives Chromium, captures via `canvas.toDataURL`. |
+| `src/render/headless.ts` | Reusable API: `renderToPng(input)`, `renderSceneToPng(input)`, `launchBrowser()` (GPU-first, loud software fallback), `assertNonBlank(stats)`, `CHROMIUM_LAUNCH_ARGS` (software flags) + `GPU_LAUNCH_ARGS`, and the `RenderInput` type. Runs a zero-dependency local HTTP server (page + vendored three + GLB assets), drives Chromium, captures via `canvas.toDataURL`. |
 | `src/render/scene-page.js` | Browser-side module. Builds the scene (room + primitives/GLB), renders one frame, exposes the PNG + pixel stats on `window`. Uses `WebGLRenderer({ preserveDrawingBuffer: true })` + `toDataURL` — the same capture path the real viewer uses. |
 | `src/render/vendor/three/` | three.js 0.170.0 build + `GLTFLoader` + `BufferGeometryUtils`, vendored so the spike runs with **no `npm install` and no network at render time**. |
 | `scripts/render-smoke.mjs` | Self-contained proof: renders a hardcoded scene, writes the PNG, verifies it is non-blank, prints stats. |
@@ -181,7 +230,13 @@ const png = await renderToPng(input);               // -> base64 -> Opus vision 
 Note the harness already captures via `toDataURL`, exactly the data URL the critic
 expects — no separate client round-trip is required for the server-side path.
 
-### Latency (measured on this host, 1024×768, software WebGL)
+### Latency (measured on this host, 1024×768)
+
+The table below is the **software** (SwiftShader) path. On the **GPU** path the render
+itself is ~**141× faster** (median render-only **3.2 ms** vs **452 ms** on a
+912k-triangle, 5-camera SC scene — see the GPU probe). Full-Chromium cold launch is
+heavier than the headless shell, so the GPU win is render-only throughput on
+non-trivial scenes, not one-shot cold renders of a few primitives.
 
 | Scenario | Time |
 |---|---|
@@ -210,9 +265,10 @@ expects — no separate client round-trip is required for the server-side path.
   concurrency improves throughput but not per-call latency; for the 5-pass loop
   (sequential anyway) one warm browser is plenty. A small pool (2–3 browsers) is the
   next lever if many scenes render in parallel.
-- **Software WebGL quality.** SwiftShader is correct but unaccelerated; antialiasing,
-  lighting, and GLB materials all render fine (see `render-smoke.png`). Heavy scenes
-  cost CPU/time, not correctness. Keep the object cap (4–6 objects).
+- **Backend quality.** The default GPU path (ANGLE → D3D12) is hardware-accelerated,
+  so heavy scenes are cheap. The SwiftShader fallback is correct but unaccelerated;
+  antialiasing, lighting, and GLB materials all render fine (see `render-smoke.png`),
+  but heavy scenes cost CPU/time — under the software path keep the object cap (4–6).
 - **Determinism.** No animation loop — exactly one frame (rendered twice across a RAF
   so GLB textures are present), so screenshots are stable for the critic.
 

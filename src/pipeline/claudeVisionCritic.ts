@@ -113,7 +113,7 @@ export const claudeVisionCritic: VisionCritic = {
         "Respond with ONLY the JSON object — no prose, no markdown code fences. It must match this schema:",
         JSON.stringify(REVIEW_SCHEMA, null, 2),
       ].join("\n");
-      text = await runClaude(prompt, { imagePaths });
+      text = await runClaude(prompt, { imagePaths, caller: "vision-critic" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

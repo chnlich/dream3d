@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { generate } from "../pipeline/orchestrator";
 import { publishSceneAssets } from "./assetBridge";
+import { logEvent, mirrorRunAssets, withRun } from "../log/audit";
 import type { JobStatus, ProgressEvent } from "../api/contract";
 
 // Vite dev-middleware plugin for the dream3d backend:
@@ -70,25 +71,39 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
         sendJson(res, 400, { error: "`amendRounds` must be a non-negative integer" });
         return;
       }
+      // Capture the validated inputs as consts so their narrowed types (string / number) survive into
+      // the withRun closure below — TS control-flow narrowing of `parsed.*` does not cross a closure.
+      const prompt = parsed.prompt;
+      const amendRounds = parsed.amendRounds;
       const jobId = crypto.randomUUID();
       const job: JobStatus = { status: "running", log: [] };
       jobs.set(jobId, job);
       // Start the run WITHOUT awaiting — the client polls GET /api/generate/<jobId> for progress.
-      // Each ProgressEvent is timestamped and appended to job.log as an English line (formatEvent).
-      generate(parsed.prompt, parsed.amendRounds, undefined, (ev) => {
-        job.log.push({ ts: Date.now(), text: formatEvent(ev) });
-      })
-        .then((result) => {
-          job.status = "done";
-          // Bridge ready GLBs to browser-fetchable /assets URLs HERE (the poll result, where the
-          // passes reach the client) — NOT on the POST response, which only carries the jobId.
-          job.result = publishSceneAssets(result);
+      // withRun binds jobId as the audit runId for the WHOLE promise chain (a synchronous call that
+      // returns at once), so every nested runClaude / meshyAssetProvider call and the progress mirror
+      // below land under <logRoot>/<jobId>/. It does NOT await — sendJson(202) still fires immediately.
+      withRun(jobId, () => {
+        // Each ProgressEvent is timestamped + appended to job.log as an English line (formatEvent) and
+        // mirrored verbatim to the run's events.jsonl — its own `kind` (plan/asset_done/done/…) tags the
+        // line and sets it apart from the llm.call records. Best-effort; logEvent runs in-context.
+        generate(prompt, amendRounds, undefined, (ev) => {
+          job.log.push({ ts: Date.now(), text: formatEvent(ev) });
+          logEvent({ ...ev });
         })
-        .catch((err) => {
-          job.status = "error";
-          job.error = err instanceof Error ? err.message : String(err);
-          console.error("[dream3d-api] job failed:", err);
-        });
+          .then((result) => {
+            job.status = "done";
+            // Audit-copy the raw LOCAL GLBs before the /assets rewrite (best-effort, never throws).
+            mirrorRunAssets(result);
+            // Bridge ready GLBs to browser-fetchable /assets URLs HERE (the poll result, where the
+            // passes reach the client) — NOT on the POST response, which only carries the jobId.
+            job.result = publishSceneAssets(result);
+          })
+          .catch((err) => {
+            job.status = "error";
+            job.error = err instanceof Error ? err.message : String(err);
+            console.error("[dream3d-api] job failed:", err);
+          });
+      });
       sendJson(res, 202, { jobId });
     } catch (error) {
       // Surface the failure to both the client and the dev console — never swallow.

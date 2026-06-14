@@ -1,5 +1,6 @@
 import type { LayoutFn } from "./types";
-import type { SceneObject, Vec3 } from "../scene/schema";
+import type { SceneObject } from "../scene/schema";
+import { footprintPenetration } from "../scene/bbox";
 
 // Deterministic layout pass: ScenePlan -> initial SceneState (pass 0).
 //
@@ -10,7 +11,6 @@ import type { SceneObject, Vec3 } from "../scene/schema";
 // (center y = half its height), then nudge apart any objects whose footprints
 // overlap. Pure + deterministic — same plan in, same scene out.
 
-const SEPARATION_GAP = 0.05; // meters of clearance to leave between footprints
 const MAX_NUDGE_ITERATIONS = 24;
 
 export const layout: LayoutFn = (plan) => {
@@ -32,12 +32,6 @@ export const layout: LayoutFn = (plan) => {
   return { room: plan.room, objects, pass: 0 };
 };
 
-// Half-extents of an object's axis-aligned bounding box (approxSize * scale / 2).
-function halfExtents(obj: SceneObject): Vec3 {
-  const s = obj.transform.scale;
-  return [(obj.approxSize[0] * s) / 2, (obj.approxSize[1] * s) / 2, (obj.approxSize[2] * s) / 2];
-}
-
 // Iteratively push overlapping footprints apart along the horizontal axis of
 // least penetration. Both objects share the correction so neither drifts far;
 // y is never touched, keeping everything on the floor.
@@ -58,17 +52,13 @@ function separateOverlaps(objects: SceneObject[]): void {
 }
 
 function pushApart(a: SceneObject, b: SceneObject): boolean {
-  const ah = halfExtents(a);
-  const bh = halfExtents(b);
-  const [ax, , az] = a.transform.position;
-  const [bx, , bz] = b.transform.position;
-
-  const penetrationX = ah[0] + bh[0] + SEPARATION_GAP - Math.abs(ax - bx);
-  const penetrationZ = ah[2] + bh[2] + SEPARATION_GAP - Math.abs(az - bz);
+  const { x: penetrationX, z: penetrationZ } = footprintPenetration(a, b);
   if (penetrationX <= 0 || penetrationZ <= 0) {
     return false; // already clear on at least one horizontal axis
   }
 
+  const [ax, , az] = a.transform.position;
+  const [bx, , bz] = b.transform.position;
   if (penetrationX <= penetrationZ) {
     const dir = ax === bx ? -1 : Math.sign(ax - bx); // tie-break: a goes -X, b goes +X
     const shift = (penetrationX / 2) * dir;

@@ -17,13 +17,13 @@ import {
   applyAtmosphere,
   defaultCameraFraming,
   slotSeatOffset,
+  standInAppearance,
+  STANDIN_FAILED,
   CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_FAR,
+  type StandInAppearance,
 } from "../render/sceneVisuals.js";
-
-// Stand-in color for objects that are not a ready GLB yet (pending / failed / no url).
-const STANDIN_COLOR = 0x4dabf7;
 
 // Crisp full device-pixel-ratio for idle frames, capped at 1.5 so a 2x display doesn't rasterize the
 // heavy (~1-2M-triangle) PBR scene at 4x the pixels. While the user orbits/pans/zooms we drop to
@@ -103,7 +103,8 @@ export class SceneViewer {
     addRoom(root, scene.room);
 
     // One shared GLTFLoader handles concurrent loadAsync calls; load all objects in parallel, then place
-    // them in declared order. Promise.all rejects on the first failed ready-GLB load (fail loud).
+    // them in declared order. buildObjectNode catches a per-object GLB load failure and substitutes a
+    // marked placeholder (logged + visible), so one broken asset never blanks the whole scene.
     const loader = new GLTFLoader();
     const nodes = await Promise.all(scene.objects.map((obj) => this.buildObjectNode(obj, loader)));
     // Union AABB of just the placed OBJECTS (Box3.expandByObject walks each node's
@@ -226,19 +227,41 @@ export class SceneViewer {
   };
 
   // Ready GLB -> the loaded scene graph; everything else -> a box stand-in sized to approxSize so
-  // pending / failed objects still show. A failed load on a ready object throws (fail loud).
+  // pending / failed objects still show (blue = still working, red = failed). A ready GLB that fails
+  // to load is caught here (see below) rather than rejecting the whole scene.
   private async buildObjectNode(obj: SceneObject, loader: GLTFLoader): Promise<THREE.Object3D> {
     if (obj.glbUrl && obj.status === "ready") {
-      const gltf = await loader.loadAsync(obj.glbUrl);
-      return gltf.scene;
+      try {
+        const gltf = await loader.loadAsync(obj.glbUrl);
+        return gltf.scene;
+      } catch (err) {
+        // A ready asset that fails to load (a placeholder url 404ing in mock mode, a
+        // corrupt/missing cached GLB in real mode) must NOT blank the WHOLE scene via a
+        // rejected Promise.all — that loses every other object and the room, leaving the
+        // user a silently-blank canvas. Surface it LOUDLY instead: log to the console AND
+        // drop a clearly-marked red placeholder where the object should be, so the rest of
+        // the scene renders and the failure is impossible to miss. This is the goal's
+        // "a missing/failed asset surfaces a clear state, never a silently-blank canvas" —
+        // a visible red marker plus a console error is the opposite of a swallowed failure.
+        console.error(`[SceneViewer] failed to load GLB for "${obj.id}" (${obj.glbUrl}); showing a failed-asset marker`, err);
+        return this.makeStandIn(obj.approxSize, STANDIN_FAILED);
+      }
     }
-    const [w, h, d] = obj.approxSize;
+    // Not a ready GLB: a "failed" status reads as the red alarm marker; pending / any other
+    // non-ready state reads as the blue "still working" box.
+    return this.makeStandIn(obj.approxSize, standInAppearance(obj.status));
+  }
+
+  // A placeholder box sized to the object's approxSize, styled by a shared stand-in appearance
+  // (blue = pending/working, red = failed) so the two states read differently at a glance.
+  private makeStandIn(approxSize: Vec3, appearance: StandInAppearance): THREE.Mesh {
+    const [w, h, d] = approxSize;
     const material = new THREE.MeshStandardMaterial({
-      color: STANDIN_COLOR,
-      roughness: 0.6,
-      metalness: 0.05,
-      transparent: true,
-      opacity: 0.85,
+      color: appearance.color,
+      roughness: appearance.roughness,
+      metalness: appearance.metalness,
+      transparent: appearance.transparent,
+      opacity: appearance.opacity,
     });
     return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
   }

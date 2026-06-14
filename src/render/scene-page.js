@@ -29,6 +29,7 @@ import {
   addRoom,
   defaultCameraFraming,
   slotSeatOffset,
+  STANDIN_FAILED,
   CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_FAR,
@@ -99,7 +100,8 @@ window.__renderView = function renderView(cam) {
 async function addObjects(scene, objects) {
   // One shared GLTFLoader handles concurrent loadAsync calls; build all nodes in
   // PARALLEL, then place them in declared order (mirrors SceneViewer.loadScene).
-  // Promise.all rejects on the first failed GLB load (fail loud).
+  // buildObjectNode catches a per-object GLB load failure and substitutes a marked
+  // placeholder, so one broken asset never crashes the whole render.
   const loader = new GLTFLoader();
   const nodes = await Promise.all(objects.map((obj, i) => buildObjectNode(obj, loader, i)));
   // Collect the placed OBJECT nodes (not the floor/lights) so the default camera can
@@ -125,8 +127,18 @@ async function addObjects(scene, objects) {
 // so parallel loading does not reorder the scene).
 async function buildObjectNode(obj, loader, i) {
   if (obj.glbUrl) {
-    const gltf = await loader.loadAsync(obj.glbUrl);
-    return gltf.scene;
+    try {
+      const gltf = await loader.loadAsync(obj.glbUrl);
+      return gltf.scene;
+    } catch (error) {
+      // A failed GLB load must NOT crash the whole headless render: a rejected Promise.all
+      // flips __renderState to "error", which blanks EVERY camera angle and kills the amend
+      // round, so the vision critic sees nothing. Log it loudly and substitute a clearly
+      // marked red failed-asset placeholder instead, so the critic still sees the rest of the
+      // scene with the broken object flagged. Lockstep with SceneViewer.buildObjectNode.
+      console.error(`scene-page: failed to load GLB for object[${i}] (${obj.glbUrl}); showing a failed-asset marker`, error);
+      return standInBox(STANDIN_FAILED);
+    }
   }
   if (obj.primitive === "box") {
     return new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), primitiveMaterial(obj, i));
@@ -135,6 +147,19 @@ async function buildObjectNode(obj, loader, i) {
     return new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1, 48), primitiveMaterial(obj, i));
   }
   throw new Error(`object[${i}] has neither glbUrl nor a known primitive ("box"|"cylinder")`);
+}
+
+// A unit placeholder box with a shared stand-in material; the caller fits it to the
+// object's approxSize via placeNormalized, exactly like a primitive box.
+function standInBox(appearance) {
+  const material = new THREE.MeshStandardMaterial({
+    color: appearance.color,
+    roughness: appearance.roughness,
+    metalness: appearance.metalness,
+    transparent: appearance.transparent,
+    opacity: appearance.opacity,
+  });
+  return new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material);
 }
 
 // Normalize a node to obj.approxSize and place it on the CENTER convention

@@ -24,6 +24,13 @@ import {
 // Stand-in color for objects that are not a ready GLB yet (pending / failed / no url).
 const STANDIN_COLOR = 0x4dabf7;
 
+// Crisp full device-pixel-ratio for idle frames, capped at 1.5 so a 2x display doesn't rasterize the
+// heavy (~1-2M-triangle) PBR scene at 4x the pixels. While the user orbits/pans/zooms we drop to
+// INTERACTION_PIXEL_RATIO (<= 1) so each interaction frame is far cheaper, then restore the full ratio
+// once the camera comes to rest. Read once at module load, mirroring the old construction-time read.
+const FULL_PIXEL_RATIO = Math.min(window.devicePixelRatio, 1.5);
+const INTERACTION_PIXEL_RATIO = Math.min(1, FULL_PIXEL_RATIO);
+
 export class SceneViewer {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
@@ -33,9 +40,18 @@ export class SceneViewer {
   private contentRoot: THREE.Group | null = null;
   private renderRequested = false;
   private frameHandle: number | null = null;
+  // True from the OrbitControls "start" (pointer down) through "end" (release); gates the low-res path.
+  private interacting = false;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    // powerPreference: prefer the discrete GPU on dual-GPU machines. antialias is a construction-time
+    // context attribute (cannot be toggled at runtime); preserveDrawingBuffer keeps toDataURL valid.
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      powerPreference: "high-performance",
+    });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // ACES filmic tone mapping rolls the PBR highlights into a cinematic range (the slight exposure
     // bump keeps the dark palette from crushing to black); soft shadow maps let the key light cast.
@@ -43,7 +59,7 @@ export class SceneViewer {
     this.renderer.toneMappingExposure = 1.1;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(FULL_PIXEL_RATIO);
 
     this.scene = new THREE.Scene();
     // Fog + dark background — the shared battlefield atmosphere, and the scene's only background.
@@ -61,9 +77,13 @@ export class SceneViewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    // On-demand rendering: every OrbitControls "change" (orbit/pan/zoom and each damping step) asks for
-    // exactly one frame via the idempotent guard, so there is no always-on rAF loop.
+    // On-demand rendering with dynamic resolution: every OrbitControls "change" (orbit/pan/zoom and each
+    // damping step) asks for exactly one frame via the idempotent guard — no always-on rAF loop. "start"
+    // drops to the cheaper INTERACTION_PIXEL_RATIO so dragging the heavy scene stays smooth; "end" lets the
+    // damping tail finish at that low res, then render() restores FULL_PIXEL_RATIO for one final crisp frame.
     this.controls.addEventListener("change", this.requestRender);
+    this.controls.addEventListener("start", this.handleControlsStart);
+    this.controls.addEventListener("end", this.handleControlsEnd);
     document.addEventListener("visibilitychange", this.handleVisibility);
 
     this.resizeObserver = new ResizeObserver(this.handleResize);
@@ -98,7 +118,10 @@ export class SceneViewer {
   }
 
   // Render one frame and read the buffer back. Relies on preserveDrawingBuffer so toDataURL is valid.
+  // Force the full pixel ratio first so the capture is always crisp even if invoked mid-interaction
+  // (when the renderer is sitting at the lower INTERACTION_PIXEL_RATIO); idempotent when already full.
   captureScreenshot(): string {
+    if (this.renderer.getPixelRatio() !== FULL_PIXEL_RATIO) this.applyPixelRatio(FULL_PIXEL_RATIO);
     this.renderer.render(this.scene, this.camera);
     return this.renderer.domElement.toDataURL("image/png");
   }
@@ -117,6 +140,8 @@ export class SceneViewer {
       this.frameHandle = null;
     }
     this.controls.removeEventListener("change", this.requestRender);
+    this.controls.removeEventListener("start", this.handleControlsStart);
+    this.controls.removeEventListener("end", this.handleControlsEnd);
     document.removeEventListener("visibilitychange", this.handleVisibility);
     this.resizeObserver.disconnect();
     this.clearContent();
@@ -126,12 +151,23 @@ export class SceneViewer {
 
   // --- internals -------------------------------------------------------------
 
-  // rAF callback (three.js "render on demand with damping" pattern): clear the flag first so a
-  // damping-driven "change" fired during controls.update() re-requests the next frame — that chain
-  // drives the damping settle and stops on its own once the camera comes to rest.
+  // rAF callback (three.js "render on demand with damping" pattern). controls.update() returns true while
+  // the camera is still moving — live input or the damping tail — and the "change" it fires during that
+  // move re-requests the next frame via the idempotent guard, so the chain drives itself and halts once
+  // the camera rests. While the pointer is down (interacting) OR the camera is still moving, we hold the
+  // cheap INTERACTION_PIXEL_RATIO and pump the next frame, so the whole gesture + damping settle renders
+  // at the lower resolution. Once the pointer is released AND update() == false (at rest), if we are still
+  // at the interaction ratio we restore FULL_PIXEL_RATIO and render exactly one crisp frame; the chain
+  // then stops on its own (no always-on rAF loop).
   private render = (): void => {
     this.renderRequested = false;
-    this.controls.update();
+    const moving = this.controls.update();
+    if (this.interacting || moving) {
+      this.renderer.render(this.scene, this.camera);
+      this.requestRender();
+      return;
+    }
+    if (this.renderer.getPixelRatio() !== FULL_PIXEL_RATIO) this.applyPixelRatio(FULL_PIXEL_RATIO);
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -147,6 +183,30 @@ export class SceneViewer {
   private handleVisibility = (): void => {
     if (!document.hidden) this.requestRender();
   };
+
+  // OrbitControls "start": the user grabbed the scene. Drop to the cheaper interaction resolution so each
+  // orbit/pan/zoom frame rasterizes far fewer pixels of the heavy PBR scene, then kick the on-demand loop.
+  private handleControlsStart = (): void => {
+    this.interacting = true;
+    this.applyPixelRatio(INTERACTION_PIXEL_RATIO);
+    this.requestRender();
+  };
+
+  // OrbitControls "end": pointer released. Clear the flag and let the damping tail keep rendering at the
+  // interaction resolution until render() sees controls.update() report the camera at rest and restores
+  // the full resolution. The requestRender covers the case where the camera was already at rest.
+  private handleControlsEnd = (): void => {
+    this.interacting = false;
+    this.requestRender();
+  };
+
+  // Switch the device-pixel-ratio and resize the drawing buffer to match (updateStyle=false keeps the CSS
+  // size fixed, so only the backing buffer shrinks/grows). Called only on the low<->full transitions.
+  private applyPixelRatio(ratio: number): void {
+    this.renderer.setPixelRatio(ratio);
+    const canvas = this.renderer.domElement;
+    this.renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+  }
 
   private handleResize = (): void => {
     const canvas = this.renderer.domElement;

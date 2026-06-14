@@ -38,7 +38,7 @@ function requireEl<T extends Element>(id: string, ctor: new () => T): T {
 
 const canvas = requireEl("viewer", HTMLCanvasElement);
 const promptInput = requireEl("prompt", HTMLInputElement);
-const presetSelect = requireEl("preset", HTMLSelectElement);
+const promptOptions = requireEl("prompt-options", HTMLDataListElement);
 const amendRoundsInput = requireEl("amend-rounds", HTMLInputElement);
 const generateBtn = requireEl("generate", HTMLButtonElement);
 const statusEl = requireEl("status", HTMLElement);
@@ -77,6 +77,62 @@ function applyPreset(id: string): void {
     throw new Error(`scene-presets.json has no preset with id "${id}"`);
   }
   promptInput.value = preset.prompt;
+}
+
+// Prior SENT prompts, newest-first, kept in localStorage so the <datalist> can suggest them across
+// sessions. Cap the list so it can't grow without bound.
+const HISTORY_KEY = "dream3d.promptHistory";
+const HISTORY_CAP = 20;
+
+// Read saved history; a missing key yields []. A corrupt value (unparseable, or not an array of strings)
+// is logged and discarded rather than thrown — the one tolerated-and-reported failure here, mirroring the
+// GLB-404 banner above (logged, not silently swallowed); every other path in this file stays fail-loud.
+function loadHistory(): string[] {
+  const raw = localStorage.getItem(HISTORY_KEY);
+  if (raw === null) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every((item: unknown) => typeof item === "string")) {
+      throw new Error("promptHistory is not an array of strings");
+    }
+    return parsed;
+  } catch (err) {
+    console.warn("[studio] discarding corrupt promptHistory", err);
+    return [];
+  }
+}
+
+function saveHistory(list: string[]): void {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+}
+
+// Record a just-sent prompt at the front, de-duped case-insensitively, capped at HISTORY_CAP entries.
+function addToHistory(prompt: string): void {
+  const p = prompt.trim();
+  if (!p) return;
+  const list = loadHistory().filter((entry) => entry.toLowerCase() !== p.toLowerCase());
+  list.unshift(p);
+  saveHistory(list.slice(0, HISTORY_CAP));
+}
+
+// Rebuild the <datalist> suggestions: the curated presets first (file order), then prior sent prompts
+// (newest-first) that aren't already a preset, so a sent prompt identical to a preset isn't listed twice.
+function rebuildPromptOptions(): void {
+  promptOptions.replaceChildren();
+  const appendOption = (text: string): void => {
+    const o = document.createElement("option");
+    o.value = text;
+    promptOptions.append(o);
+  };
+  for (const preset of scenePresets) {
+    appendOption(preset.prompt);
+  }
+  const presetPrompts = new Set(scenePresets.map((preset) => preset.prompt.trim().toLowerCase()));
+  for (const entry of loadHistory()) {
+    if (!presetPrompts.has(entry.trim().toLowerCase())) {
+      appendOption(entry);
+    }
+  }
 }
 
 // Rebuild the side panel from a pass's objects: one row per object showing id · label · status · glbUrl.
@@ -171,6 +227,8 @@ async function onGenerate(): Promise<void> {
     setStatus("enter a prompt");
     return;
   }
+  addToHistory(prompt);
+  rebuildPromptOptions();
   generateBtn.disabled = true;
   setStatus("Generating…");
   clearBanner();
@@ -248,14 +306,7 @@ promptInput.addEventListener("keydown", (e) => {
 prevBtn.addEventListener("click", () => void renderPass(current - 1));
 nextBtn.addEventListener("click", () => void renderPass(current + 1));
 
-// Populate the preset dropdown, default-select the demo, and pre-fill its prompt so one click of
-// Generate runs the demo. Changing the selection refills the prompt (which stays freely editable).
-for (const preset of scenePresets) {
-  const option = document.createElement("option");
-  option.value = preset.id;
-  option.textContent = preset.label;
-  presetSelect.append(option);
-}
-presetSelect.value = DEFAULT_PRESET_ID;
-applyPreset(presetSelect.value);
-presetSelect.addEventListener("change", () => applyPreset(presetSelect.value));
+// First load: pre-fill the StarCraft preset's prompt so one click of Generate runs the demo (it stays
+// freely editable), then seed the <datalist> with the presets + any saved prompt history.
+applyPreset(DEFAULT_PRESET_ID);
+rebuildPromptOptions();

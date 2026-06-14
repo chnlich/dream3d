@@ -202,11 +202,8 @@
   </head>
   <body>
     <header class="controls">
-      <label class="preset-label">
-        Preset
-        <select id="preset"></select>
-      </label>
-      <input id="prompt" type="text" placeholder="Describe a scene…" />
+      <input id="prompt" type="text" placeholder="Describe a scene…" list="prompt-options" autocomplete="off" />
+      <datalist id="prompt-options"></datalist>
       <label class="preset-label">
         Amend rounds
         <input id="amend-rounds" type="number" min="0" max="5" value="2" />

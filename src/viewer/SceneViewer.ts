@@ -16,6 +16,7 @@ import {
   addRoom,
   applyAtmosphere,
   defaultCameraFraming,
+  slotSeatOffset,
   CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_FAR,
@@ -237,11 +238,12 @@ export class SceneViewer {
     return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
   }
 
-  // Normalize a node to approxSize, center its bbox on the pivot origin (all three axes), then apply its
-  // transform. transform.position is the object CENTER (scene/schema.ts), so seating the bbox center at
-  // the pivot origin and placing the pivot there drops the base onto the floor — at scale 1, position.y
-  // is the half-height — matching layout.ts / geometryCheck.ts / the headless renderer. The pivot wraps
-  // the node so yaw spins about the model's vertical axis and transform.scale grows it about its center.
+  // Normalize a node to approxSize, center its footprint in X/Z and seat its BASE on the floor of the
+  // approxSize slot in Y, then apply its transform. transform.position is the object CENTER (scene/schema.ts)
+  // and layout.ts sets position.y = approxSize[1]/2, so placing the pivot there (the slot center) with the
+  // model's base at the slot floor drops the base onto y=0 at scale 1 — matching layout.ts / geometryCheck.ts
+  // / the headless renderer. The pivot wraps the node so yaw spins about the model's vertical axis and
+  // transform.scale grows it about its center.
   private normalizeAndPlace(node: THREE.Object3D, obj: SceneObject): THREE.Object3D {
     const approx = new THREE.Vector3(obj.approxSize[0], obj.approxSize[1], obj.approxSize[2]);
 
@@ -256,9 +258,15 @@ export class SceneViewer {
 
     const box = new THREE.Box3().setFromObject(node);
     const center = box.getCenter(new THREE.Vector3());
-    node.position.x -= center.x;
-    node.position.z -= center.z;
-    node.position.y -= center.y;
+    // Center the footprint in X/Z, but seat the model's BASE on the floor of its approxSize
+    // slot in Y. Centering Y (as before) floated any model shorter than approxSize[1] — i.e.
+    // whenever Y is not the fit-dominant axis — by half the height gap. The pivot below sits
+    // at transform.position (the slot center, y = approxSize[1]/2 when resting), so the base
+    // lands on y=0. Shared with the headless renderer via slotSeatOffset.
+    const [dx, dy, dz] = slotSeatOffset([box.min.x, box.min.y, box.min.z], [center.x, center.y, center.z], approx.y);
+    node.position.x += dx;
+    node.position.y += dy;
+    node.position.z += dz;
 
     const pivot = new THREE.Group();
     pivot.name = obj.id;

@@ -24,7 +24,15 @@
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { addLights, addRoom, defaultCameraFraming, CAMERA_FOV, CAMERA_NEAR, CAMERA_FAR } from "./sceneVisuals.js";
+import {
+  addLights,
+  addRoom,
+  defaultCameraFraming,
+  slotSeatOffset,
+  CAMERA_FOV,
+  CAMERA_NEAR,
+  CAMERA_FAR,
+} from "./sceneVisuals.js";
 
 // Cache fetched assets (GLB buffers, textures) by URL within this page, so any
 // repeat load is served from memory rather than re-fetched/re-decoded.
@@ -126,10 +134,10 @@ async function buildObjectNode(obj, loader, i) {
 
 // Normalize a node to obj.approxSize and place it on the CENTER convention
 // (scene/schema.ts:6 + pipeline/layout.ts: transform.position is the object CENTER,
-// floor at y=0). Mirrors SceneViewer.normalizeAndPlace, but recenters the bbox on the
-// local origin on ALL THREE axes (NO base-seating, NO floating): the pivot then sits
-// at the object CENTER, so the headless critic sees the same scaled, centered model
-// the live viewer does.
+// floor at y=0). Mirrors SceneViewer.normalizeAndPlace: it centers the footprint in
+// X/Z but seats the model's BASE on the floor of its approxSize slot in Y (the pivot
+// sits at the slot CENTER, transform.position), so the headless critic sees the same
+// floor-resting, scaled model the live viewer does.
 function placeNormalized(scene, node, obj) {
   const [aw, ah, ad] = obj.approxSize;
 
@@ -141,10 +149,16 @@ function placeNormalized(scene, node, obj) {
   node.scale.multiplyScalar(fit);
   node.updateMatrixWorld(true);
 
-  const center = new THREE.Box3().setFromObject(node).getCenter(new THREE.Vector3());
-  node.position.x -= center.x;
-  node.position.y -= center.y;
-  node.position.z -= center.z;
+  const box = new THREE.Box3().setFromObject(node);
+  const center = box.getCenter(new THREE.Vector3());
+  // Seat the model's BASE on the floor of its approxSize slot in Y (centering Y would
+  // float any model shorter than approxSize[1], i.e. whenever Y is not the fit-dominant
+  // axis); the footprint still centers in X/Z. Shared with the live viewer via
+  // slotSeatOffset, so the headless critic and SceneViewer seat every model identically.
+  const [dx, dy, dz] = slotSeatOffset([box.min.x, box.min.y, box.min.z], [center.x, center.y, center.z], ah);
+  node.position.x += dx;
+  node.position.y += dy;
+  node.position.z += dz;
 
   const pivot = new THREE.Group();
   pivot.add(node);

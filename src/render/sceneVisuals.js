@@ -71,6 +71,25 @@ export function addRoom(target, room) {
   target.add(floor);
 }
 
+// Node-local offset [dx, dy, dz] that seats a fit-normalized model inside its
+// approxSize "slot": footprint centered in X/Z, and the model's BASE on the slot
+// floor in Y. Inputs are the model's bounding box AFTER the approxSize fit-scale —
+// its min corner and its center, both world-space [x, y, z] arrays — plus the slot
+// height approxY (= approxSize[1]). The caller then places the pivot at
+// transform.position (the slot CENTER, y = approxY/2 for a floor-resting object)
+// and scales it by transform.scale, so at scale 1 the model rests exactly on y=0.
+//
+// Seating the BASE (not the bbox center) in Y is what keeps models on the floor: a
+// fitted model shorter than approxY — i.e. whenever Y is NOT the fit-dominant axis,
+// which is most flat/wide objects — would otherwise hover by half the height gap.
+// X/Z still center so the footprint sits at the planned position. Pure math, no
+// THREE dependency, shared by SceneViewer.ts + scene-page.js (kept in lockstep) and
+// the floor-rest verification — so the live viewer and the headless critic seat
+// every model identically.
+export function slotSeatOffset(scaledMin, scaledCenter, approxY) {
+  return [-scaledCenter[0], -(scaledMin[1] + approxY / 2), -scaledCenter[2]];
+}
+
 // A 3/4 view that frames the whole room from a front corner. Pure math: returns
 // plain { position, target } world-space arrays and touches no THREE/camera
 // object, so each renderer applies them to its own camera (and orbit controls).

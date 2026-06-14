@@ -40,6 +40,16 @@ function applyFix(obj: SceneObject, issue: ReviewIssue): void {
         throw new Error(`fix: "resize" on "${issue.objectId}" is missing scaleFactor`);
       }
       obj.transform.scale *= f.scaleFactor;
+      // Re-seat on the floor at the new scale. `position` is the object CENTER
+      // (scene/schema.ts) and a floor-resting center sits at half the object's scaled
+      // height — exactly geometryCheck's restY = approxSize·scale/2 (which layout.ts also
+      // emits at scale 1). Both renderers place the pivot at position.y and scale the model
+      // (base seated at pivot-local -approxSize[1]/2) about it, so the rendered base lands at
+      // position.y - scale·approxSize[1]/2. Without this update the stale position.y no longer
+      // matches the new scale, so the base sinks (scaleFactor>1) or floats (scaleFactor<1) — in
+      // both the live viewer and the headless critic's own render, so the critic would judge a
+      // mis-seated scene. Keeping the invariant here rests it for every downstream reader.
+      obj.transform.position[1] = (obj.approxSize[1] * obj.transform.scale) / 2;
       return;
     }
     case "regenerate": {

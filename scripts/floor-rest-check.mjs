@@ -10,13 +10,25 @@
 // in Y via the shared slotSeatOffset() (src/render/sceneVisuals.js), so the base
 // lands on y=0 regardless of the fitted height.
 //
-// This script proves the fix two ways, with NO Meshy credits:
+// A second, independent way to mis-seat a model is SCALE: the vision critic's `resize`
+// fix multiplies transform.scale, but the renderers scale the model about the pivot at
+// transform.position, so the base only stays on the floor if position.y tracks the
+// resting center height approxSize[1]·scale/2 (= geometryCheck.restY, which layout.ts
+// emits at scale 1). The old fix() left position.y at its scale-1 value, so any resized
+// object sank (scale>1) or floated (scale<1) by (1-scaleFactor)·approxSize[1]/2 — in both
+// the live viewer and the headless critic's own render. fix() now re-seats it.
+//
+// This script proves both fixes, with NO Meshy credits:
 //   1. PURE MATH — drive the production slotSeatOffset() over representative fitted
 //      bounding boxes (incl. flat models the old code floated) and assert the world
 //      base lands on the floor (and the footprint stays centered).
 //   2. REAL ASSET — load a cached Meshy GLB in headless Chromium, fit it to a neutral
 //      slot, and measure the world base under the OLD center-seat vs the NEW base-seat.
-//      Asserts the new base rests on the floor; reports the old float distance.
+//      Asserts the new base rests on the floor (at scale 1 AND non-unit scales); reports
+//      the old float distance.
+//   3. PRODUCTION fix() — drive the real resize fix (src/pipeline/fix.ts) and assert the
+//      resulting position.y rests the model under the render equation, for an enlarge AND
+//      a shrink; show how far the OLD fix() (stale position.y) sank / floated it.
 //
 // Run:  node scripts/floor-rest-check.mjs
 // Exits non-zero on any failed assertion.
@@ -25,6 +37,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { readFile, realpath, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { register } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -39,6 +52,12 @@ const EPS = 1e-6; // a base this close to y=0 is "on the floor"
 
 // slotSeatOffset is the production seating math, shared by both renderers.
 const { slotSeatOffset } = await import(new URL("../src/render/sceneVisuals.js", import.meta.url).href);
+
+// fix() is the production review-fix applier: a `resize` fix must re-seat the object
+// on the floor at the new scale (src/pipeline/fix.ts). Register the TS resolve hook so
+// plain `node` can import the unbundled .ts source (same pattern as pipeline-mock-smoke.mjs).
+register("./ts-resolve-hook.mjs", import.meta.url);
+const { fix } = await import(new URL("../src/pipeline/fix.ts", import.meta.url).href);
 
 let failures = 0;
 function check(label, ok, detail) {
@@ -123,7 +142,65 @@ if (!glbPath) {
   } else {
     console.log(`  note: this asset is ~Y-dominant in a unit slot, so the old code also rested it; see pure-math cases for the float.`);
   }
+
+  // Non-unit scale on the REAL mesh: under the production convention
+  // position.y = approxY*scale/2 (layout.ts / geometryCheck.restY / the new fix.ts), the
+  // pivot scales the model — base at pivot-local localBaseY — about position.y, so the world
+  // base is position.y + scale*localBaseY. Prove a real Meshy mesh rests at scale != 1, and
+  // show how far the pre-fix stale position.y (left at the scale-1 value) sank / floated it.
+  for (const scale of [1.5, 0.5]) {
+    const restingY = (APPROX[1] * scale) / 2; // fix.ts writes this on resize
+    const worldBase = restingY + scale * measured.localBaseY;
+    const staleBase = APPROX[1] / 2 + scale * measured.localBaseY; // pre-fix position.y
+    check(
+      `real asset: rests at scale ${scale}`,
+      Math.abs(worldBase) < 1e-4,
+      `worldBase=${worldBase.toFixed(5)} m (pre-fix stale position.y -> ` +
+        `${staleBase >= 0 ? "+" : ""}${staleBase.toFixed(3)} m ${staleBase > 0 ? "FLOAT" : "SINK"})`,
+    );
+  }
 }
+
+// ---------------------------------------------------------------------------
+
+// --- 3. PRODUCTION fix(): a resize re-seats on the floor -------------------
+//
+// The data-side half of "rest at any scale": the vision critic's `resize` fix multiplies
+// transform.scale; fix() must also re-seat the CENTER so position.y stays at the resting
+// height approxY*scale/2. Drive the REAL fix() (src/pipeline/fix.ts) over an object resting
+// at scale 1 and assert the result rests under the render equation
+// worldBase = position.y - scale*approxY/2, for an enlarge AND a shrink. The OLD fix() left
+// position.y untouched, so the SAME object sank / floated.
+console.log("\n3. Production fix() resize re-seats on the floor (src/pipeline/fix.ts):\n");
+
+const APPROX_Y = 1.8;
+for (const factor of [1.5, 0.4]) {
+  const before = restingSceneAtScale1(APPROX_Y);
+  const after = fix(before, [resizeIssue("obj", factor)]);
+  const o = after.objects[0];
+  const renderedBase = o.transform.position[1] - o.transform.scale * (APPROX_Y / 2);
+  // What the OLD fix() produced: same scale, position.y left at the scale-1 resting value.
+  const staleBase = APPROX_Y / 2 - o.transform.scale * (APPROX_Y / 2);
+  check(
+    `resize x${factor}: object rests after fix()`,
+    Math.abs(renderedBase) < EPS && Math.abs(o.transform.scale - factor) < EPS,
+    `scale=${o.transform.scale.toFixed(2)} position.y=${o.transform.position[1].toFixed(3)} ` +
+      `renderedBase=${renderedBase.toFixed(4)} (old fix() -> ` +
+      `${staleBase >= 0 ? "+" : ""}${staleBase.toFixed(3)} m ${staleBase > 0 ? "FLOAT" : "SINK"})`,
+  );
+  check(
+    `resize x${factor}: only scale + center-Y change`,
+    o.transform.position[0] === 1.5 && o.transform.position[2] === -0.5 && o.transform.rotationYDeg === 30,
+    `pos=[${o.transform.position.map((n) => n.toFixed(2)).join(", ")}] yaw=${o.transform.rotationYDeg}`,
+  );
+}
+
+// The fix must matter: under the OLD fix() an enlarge x1.5 left the base materially off the floor.
+check(
+  "resize fix is load-bearing (pre-fix base != 0)",
+  Math.abs(APPROX_Y / 2 - 1.5 * (APPROX_Y / 2)) > 0.1,
+  `enlarge x1.5 sank ${(APPROX_Y / 2 - 1.5 * (APPROX_Y / 2)).toFixed(3)} m under old fix()`,
+);
 
 // ---------------------------------------------------------------------------
 
@@ -132,7 +209,7 @@ if (failures > 0) {
   console.error(`FAIL — ${failures} assertion(s) failed`);
   process.exit(1);
 }
-console.log("PASS — models seat their base on the floor (no float from a short fitted height)");
+console.log("PASS — models seat their base on the floor at any scale (short fitted height AND resize)");
 
 // ---------------------------------------------------------------------------
 // Real-asset probe: a minimal three.js page that loads the GLB, fits it, and
@@ -184,8 +261,12 @@ try {
   const c = box.getCenter(new THREE.Vector3());
   const off = slotSeatOffset([box.min.x, box.min.y, box.min.z], [c.x, c.y, c.z], approx[1]);
   const pivotY = approx[1] / 2;
+  // localBaseY is the model's base in PIVOT-local space (after fit + seat). The pivot
+  // scales the model about its origin, so the world base is pivot.position.y + scale*localBaseY;
+  // slotSeatOffset makes this -approx[1]/2, which is what lets a non-unit scale rest (section 2).
   window.__result = {
     fittedHeight: box.max.y - box.min.y,
+    localBaseY: box.min.y + off[1],
     newWorldBaseY: pivotY + (box.min.y + off[1]),
     oldWorldBaseY: pivotY + (box.min.y - c.y),
   };
@@ -275,4 +356,36 @@ async function firstResolvableGlb() {
 function rank(name, preferred) {
   const i = preferred.findIndex((p) => name.startsWith(p));
   return i === -1 ? preferred.length : i;
+}
+
+// A minimal SceneState with one object resting on the floor at scale 1 — position is the
+// CENTER, so its resting Y is approxY/2 (layout.ts's convention). rotationYDeg is non-zero
+// so section 3 can assert the resize leaves yaw untouched.
+function restingSceneAtScale1(approxY) {
+  return {
+    room: { width: 8, depth: 6, height: 4 },
+    objects: [
+      {
+        id: "obj",
+        label: "test object",
+        meshyPrompt: "x",
+        approxSize: [1, approxY, 1],
+        transform: { position: [1.5, approxY / 2, -0.5], rotationYDeg: 30, scale: 1 },
+        status: "ready",
+      },
+    ],
+    pass: 0,
+  };
+}
+
+// A vision-style resize ReviewIssue: scale by `factor` (>1 enlarge, <1 shrink).
+function resizeIssue(objectId, factor) {
+  return {
+    objectId,
+    kind: factor > 1 ? "too_small" : "too_big",
+    severity: "medium",
+    description: "resize",
+    fix: { op: "resize", scaleFactor: factor },
+    source: "vision",
+  };
 }

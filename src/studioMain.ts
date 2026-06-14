@@ -69,14 +69,15 @@ function clearBanner(): void {
   bannerEl.hidden = true;
 }
 
-// Fill the prompt input with a preset's prompt (it stays freely editable afterwards). Fail loud on an
-// unknown id — that only happens if scene-presets.json and DEFAULT_PRESET_ID drift apart.
-function applyPreset(id: string): void {
+// Resolve a preset's prompt by id, failing loud on an unknown id — that only happens if
+// scene-presets.json and DEFAULT_PRESET_ID drift apart. One lookup behind both the first-load
+// placeholder and the empty-box Generate fallback, which surface the curated default prompt.
+function promptForPreset(id: string): string {
   const preset = scenePresets.find((p) => p.id === id);
   if (!preset) {
     throw new Error(`scene-presets.json has no preset with id "${id}"`);
   }
-  promptInput.value = preset.prompt;
+  return preset.prompt;
 }
 
 // Prior SENT prompts, newest-first, kept in localStorage so the <datalist> can suggest them across
@@ -222,11 +223,10 @@ function failGenerate(err: unknown): void {
 }
 
 async function onGenerate(): Promise<void> {
-  const prompt = promptInput.value.trim();
-  if (prompt.length === 0) {
-    setStatus("enter a prompt");
-    return;
-  }
+  // An empty box runs the default preset (the curated StarCraft demo, shown as the placeholder); reflect
+  // the resolved prompt back into the input so the UI shows what actually ran, then record it.
+  const prompt = promptInput.value.trim() || promptForPreset(DEFAULT_PRESET_ID);
+  promptInput.value = prompt;
   addToHistory(prompt);
   rebuildPromptOptions();
   generateBtn.disabled = true;
@@ -306,7 +306,9 @@ promptInput.addEventListener("keydown", (e) => {
 prevBtn.addEventListener("click", () => void renderPass(current - 1));
 nextBtn.addEventListener("click", () => void renderPass(current + 1));
 
-// First load: pre-fill the StarCraft preset's prompt so one click of Generate runs the demo (it stays
-// freely editable), then seed the <datalist> with the presets + any saved prompt history.
-applyPreset(DEFAULT_PRESET_ID);
+// First load: leave the prompt input empty so opening the <datalist> shows ALL presets (a prefilled
+// value makes the browser filter the suggestions down to the one matching preset). Surface the default
+// StarCraft prompt as the placeholder instead — one click of Generate on the empty box still runs the
+// demo (see onGenerate) — then seed the <datalist> with the presets + any saved prompt history.
+promptInput.placeholder = promptForPreset(DEFAULT_PRESET_ID);
 rebuildPromptOptions();

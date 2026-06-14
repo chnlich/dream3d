@@ -174,8 +174,10 @@ function parseDataUrl(dataUrl: string, viewName: string): { mediaType: ImageMedi
 
 // --- response parsing + validation: the model's output is untrusted, so narrow loudly ---
 
-// The CLI returns the model's final text; it may wrap the JSON in a ```json fence.
-// Strip a fenced block if present, then parse — failing loudly on anything unparseable.
+// The CLI returns the model's final text; it may wrap the JSON in a ```json fence,
+// or (commonly with Opus) prepend explanatory prose before a bare JSON object.
+// Strip a fenced block if present and parse; on failure, salvage the outermost JSON
+// value out of surrounding prose; only then fail loudly on anything unparseable.
 function parseJson(text: string): unknown {
   let body = text.trim();
   const fence = /```(?:json)?\s*\n?([\s\S]*?)```/.exec(body);
@@ -185,8 +187,33 @@ function parseJson(text: string): unknown {
   try {
     return JSON.parse(body);
   } catch (cause) {
+    const salvaged = sliceOutermostJson(body);
+    if (salvaged !== null) {
+      try {
+        return JSON.parse(salvaged);
+      } catch {
+        // salvage also failed — fall through to the loud error (keeps the original cause)
+      }
+    }
     throw new Error(`claudeVisionCritic: model output was not valid JSON: ${body.slice(0, 1000)}`, { cause });
   }
+}
+
+// Salvage a bare JSON value embedded in surrounding prose: slice from the first '{'
+// to the last '}', or — when there are no braces — the first '[' to the last ']'.
+// Returns null when nothing slice-able is present (caller then fails loudly).
+function sliceOutermostJson(body: string): string | null {
+  const open = body.indexOf("{");
+  if (open !== -1) {
+    const close = body.lastIndexOf("}");
+    return close > open ? body.slice(open, close + 1) : null;
+  }
+  const openArr = body.indexOf("[");
+  if (openArr !== -1) {
+    const closeArr = body.lastIndexOf("]");
+    if (closeArr > openArr) return body.slice(openArr, closeArr + 1);
+  }
+  return null;
 }
 
 function parseFix(value: unknown, ctx: string): Fix {

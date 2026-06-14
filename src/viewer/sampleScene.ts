@@ -3,6 +3,10 @@ import type { SceneState } from "../scene/schema";
 // Hand-authored demo scene: three StarCraft units standing in a small room, roughly facing the
 // center and spaced so their bounding boxes don't overlap. GLBs live under public/sample-assets/
 // (gitignored; regenerate via scripts/meshy-generate.mjs). approxSize drives the bbox normalization.
+//
+// transform.position is the object CENTER (scene/schema.ts), floor at y=0, so a unit RESTS on the
+// floor when its center y = approxSize[1] / 2 (matching layout.ts). The y values below are exactly
+// those half-heights — at y=0 each unit would be buried to its waist.
 export const sampleScene: SceneState = {
   room: { width: 8, depth: 6, height: 3.5 },
   pass: 0,
@@ -13,7 +17,7 @@ export const sampleScene: SceneState = {
       meshyPrompt:
         "bulky armored humanoid soldier in heavy powered exosuit, full enclosed helmet, thick shoulder pauldrons, both hands gripping a short chunky rifle, standing upright",
       approxSize: [1.21, 2.0, 1.02],
-      transform: { position: [-1.8, 0, 0.5], rotationYDeg: 25, scale: 1 },
+      transform: { position: [-1.8, 1.0, 0.5], rotationYDeg: 25, scale: 1 },
       glbUrl: "/sample-assets/marine.glb",
       status: "ready",
     },
@@ -23,7 +27,7 @@ export const sampleScene: SceneState = {
       meshyPrompt:
         "small fast four-legged carapaced alien beast, two scythe-like clawed forelimbs, low crouched predatory posture, segmented chitin plates",
       approxSize: [1.96, 1.0, 1.87],
-      transform: { position: [1.5, 0, -0.5], rotationYDeg: -120, scale: 1 },
+      transform: { position: [1.5, 0.5, -0.5], rotationYDeg: -120, scale: 1 },
       glbUrl: "/sample-assets/zergling.glb",
       status: "ready",
     },
@@ -33,7 +37,7 @@ export const sampleScene: SceneState = {
       meshyPrompt:
         "tall serpentine alien creature with an armored hooded head, upright cobra-like raised torso, a pair of large bladed scythe forelimbs, segmented carapace",
       approxSize: [1.6, 2.6, 1.6],
-      transform: { position: [0.2, 0, -2.0], rotationYDeg: 180, scale: 1 },
+      transform: { position: [0.2, 1.3, -2.0], rotationYDeg: 180, scale: 1 },
       glbUrl: "/sample-assets/hydralisk.glb",
       status: "ready",
     },

@@ -25,6 +25,19 @@ export const CAMERA_FAR: number;
 
 export function addLights(target: Object3D): void;
 export function addRoom(target: Object3D, room: RoomDims): void;
+
+/**
+ * Node-local offset [dx, dy, dz] that seats a fit-normalized model in its approxSize
+ * slot: footprint centered in X/Z, base on the slot floor in Y. `scaledMin`/`scaledCenter`
+ * are the model's post-fit bounding-box min corner + center; `approxY` is the slot height
+ * (approxSize[1]). Seating the base (not the center) in Y is what keeps models from floating.
+ */
+export function slotSeatOffset(
+  scaledMin: [number, number, number],
+  scaledCenter: [number, number, number],
+  approxY: number,
+): [number, number, number];
+
 export function defaultCameraFraming(room: RoomDims): CameraFraming;
 
 /** Set Scene-level fog + background (the shared battlefield atmosphere). Client-viewer use. */

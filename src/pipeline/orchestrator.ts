@@ -14,6 +14,7 @@ import { launchBrowser, type RenderInput } from "../render/headless";
 import { captureViews } from "../render/multiangle/index";
 import { criticCameras } from "../render/criticCameras";
 import { deriveResponseKey, readCachedResponse, writeCachedResponse } from "./responseCache";
+import { getOrCreatePlan } from "./planCache";
 
 // The agentic loop: plan -> assets -> layout -> [render -> geometry + vision ->
 // fix] x amendRounds. The response always carries amendRounds + 1 passes (the
@@ -84,7 +85,7 @@ async function runPipeline(
   const { planner, assetProvider, visionCritic } = implsFor(mode);
 
   onEvent?.({ kind: "plan" });
-  const plan = await planner.plan(prompt);
+  const plan = await getOrCreatePlan(prompt, mode, () => planner.plan(prompt));
   onEvent?.({ kind: "plan_done", objectCount: plan.objects.length });
 
   const total = plan.objects.length;

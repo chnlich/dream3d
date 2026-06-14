@@ -6,7 +6,7 @@
 // single local server, page, navigation, and scene + GLB load, after which each
 // camera is a cheap render-only capture (SEQUENTIALLY, no concurrency — under
 // SwiftShader renders share the CPU, see docs/headless-render.md). These PNGs feed
-// the Opus vision critic in the agent loop (PLAN.md step 4).
+// the Opus vision critic in the agent loop.
 //
 // This module derives NO angles and applies NO presets — cameras are entirely
 // caller-controlled — and it re-implements no render logic and re-vendors no

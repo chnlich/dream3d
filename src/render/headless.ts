@@ -3,7 +3,7 @@
 // Renders a small, self-contained scene description to a PNG using headless
 // Chromium + software WebGL (SwiftShader). This is the server-side capture path
 // that lets the agent loop screenshot a scene and feed it to the Opus vision
-// critic (PLAN.md step 4). See docs/headless-render.md for the host setup and
+// critic. See docs/headless-render.md for the host setup and
 // the SceneState integration notes.
 //
 // Design:

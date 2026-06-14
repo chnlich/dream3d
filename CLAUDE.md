@@ -1,6 +1,6 @@
 # dream3d — agent notes
 
-Source of truth for the plan: `PLAN.md`. Verified Meshy API reference: `docs/meshy-api.md`.
+Architecture & usage: `README.md`. Verified Meshy API reference: `docs/meshy-api.md`.
 
 ## Generating 3D objects (Meshy)
 

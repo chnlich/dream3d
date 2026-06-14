@@ -2,7 +2,7 @@
 
 This documents the de-risking spike for dream3d's **#1 risk**: rendering a three.js
 scene to a PNG **server-side**, so the agent loop can screenshot a scene and feed it
-to the Opus vision critic (see `PLAN.md` step 4).
+to the Opus vision critic (the scene-review step of the agent loop).
 
 **Result: proven.** Headless Chromium gets a real **WebGL 2.0** context on this
 GPU-less WSL host via **SwiftShader** (software GL) and renders a lit, multi-object
@@ -153,7 +153,7 @@ scene: `distinctColors=135`, `nonBackgroundFraction=53.2%`, `luminanceStdDev=48.
 ### `SceneState` → `RenderInput`
 
 This spike deliberately does **not** import the project scene schema. At
-integration, map the post-layout scene (`PLAN.md` §3) to `RenderInput`:
+integration, map the post-layout scene to `RenderInput`:
 
 | `SceneState` (post-layout) | `RenderInput` |
 |---|---|
@@ -212,7 +212,7 @@ expects — no separate client round-trip is required for the server-side path.
   next lever if many scenes render in parallel.
 - **Software WebGL quality.** SwiftShader is correct but unaccelerated; antialiasing,
   lighting, and GLB materials all render fine (see `render-smoke.png`). Heavy scenes
-  cost CPU/time, not correctness. Keep the object cap (`PLAN.md` §4: 4–6 objects).
+  cost CPU/time, not correctness. Keep the object cap (4–6 objects).
 - **Determinism.** No animation loop — exactly one frame (rendered twice across a RAF
   so GLB textures are present), so screenshots are stable for the critic.
 

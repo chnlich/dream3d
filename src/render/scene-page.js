@@ -20,7 +20,7 @@
 //
 // We use `preserveDrawingBuffer: true` + `toDataURL` (rather than a Playwright
 // element screenshot) because that is exactly the capture path the real dream3d
-// viewer uses (see PLAN.md step 4), so this harness exercises the same code.
+// viewer uses, so this harness exercises the same code.
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";

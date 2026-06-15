@@ -235,8 +235,7 @@ export class SceneViewer {
         const gltf = await loader.loadAsync(obj.glbUrl);
         return gltf.scene;
       } catch (err) {
-        // A ready asset that fails to load (a placeholder url 404ing in mock mode, a
-        // corrupt/missing cached GLB in real mode) must NOT blank the WHOLE scene via a
+        // A ready asset that fails to load (a corrupt/missing cached GLB) must NOT blank the WHOLE scene via a
         // rejected Promise.all — that loses every other object and the room, leaving the
         // user a silently-blank canvas. Surface it LOUDLY instead: log to the console AND
         // drop a clearly-marked red placeholder where the object should be, so the rest of

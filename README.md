@@ -23,7 +23,7 @@ where the meshes come from.
 ## How it works
 
 The pipeline lives in [`src/pipeline/orchestrator.ts`](src/pipeline/orchestrator.ts) —
-`generate(prompt, amendRounds, mode, onEvent?)`:
+`generate(prompt, amendRounds, onEvent?)`:
 
 ```
 prompt
@@ -46,32 +46,18 @@ prompt
 { passes }  amendRounds + 1 passes: the draft (p0), then one per amend round.
 ```
 
-### Mock vs real mode
-
-- **Mock (default)** — fully offline, no keys, instant. Mock planner / asset /
-  critic exercise the whole pipeline and pass structure without any network.
-- **Real** — `DREAM3D_MODE=real` drives the real Claude + Meshy pipeline
-  (`resolveMode()` in the orchestrator).
-
 ## Quick start
 
 ```bash
 npm install
+bash scripts/setup-headless-render.sh          # one-shot, no-sudo headless-render host setup
+cp config/local.example.json config/local.json # then add your Meshy key (see below)
 npm run dev            # Vite dev server on http://localhost:5173
 ```
 
-Open **http://localhost:5173/studio.html**. With no keys this runs the offline
-mock pipeline end-to-end.
-
-For the **real** pipeline (Claude + Meshy):
-
-```bash
-bash scripts/setup-headless-render.sh          # one-shot, no-sudo headless-render host setup
-cp config/local.example.json config/local.json # then add your Meshy key (see below)
-DREAM3D_MODE=real npm run dev
-```
-
-Real mode also needs the local `claude` CLI logged in (see **LLM transport**).
+Open **http://localhost:5173/studio.html**. The pipeline uses the real Claude +
+Meshy backends, so you also need the local `claude` CLI logged in (see **LLM
+transport**).
 
 ## Pages
 
@@ -115,27 +101,25 @@ to the `Read` tool). `config/local.json` holds **only** `meshyApiKey`.
 ## Configuration & env vars
 
 - **`config/local.json`** — `{ "meshyApiKey": "msy_..." }`, gitignored. Copy from
-  [`config/local.example.json`](config/local.example.json). Needed only for real
-  Meshy generation; a pure cache hit needs no key.
-- **`DREAM3D_MODE`** — `real` to use the Claude + Meshy pipeline; anything else =
-  mock (default).
-- **`DREAM3D_RESPONSE_CACHE=0`** — bypass the response cache (real mode).
-- **`DREAM3D_PLAN_CACHE=0`** — bypass the plan cache (real mode).
+  [`config/local.example.json`](config/local.example.json). Needed only when
+  actually generating; a pure cache hit needs no key.
+- **`DREAM3D_RESPONSE_CACHE=0`** — bypass the response cache.
+- **`DREAM3D_PLAN_CACHE=0`** — bypass the plan cache.
 - The dev server pins port **5173** (`strictPort`) and allow-lists a Tailscale
   Funnel hostname for public HTTPS exposure — see `server.allowedHosts` in
   [`vite.config.ts`](vite.config.ts).
 
 ## Caching
 
-Three layers, all **real-mode only** (mock always runs fresh):
+Three cache layers:
 
 1. **Response cache** ([`src/pipeline/responseCache.ts`](src/pipeline/responseCache.ts))
-   — memoizes the whole `GenerateResponse` by `(prompt, amendRounds, mode)`. A
+   — memoizes the whole `GenerateResponse` by `(prompt, amendRounds)`. A
    repeat is sub-second and spends zero Meshy credits.
 2. **Plan cache** ([`src/pipeline/planCache.ts`](src/pipeline/planCache.ts)) —
-   caches the planner's `ScenePlan` by `(prompt, mode)`. `amendRounds` is
-   excluded, so re-running the same prompt reuses the plan — identical
-   `meshyPrompt`s → Meshy asset-cache hits.
+   caches the planner's `ScenePlan` by `(prompt)`. `amendRounds` is excluded, so
+   re-running the same prompt reuses the plan — identical `meshyPrompt`s → Meshy
+   asset-cache hits.
 3. **Meshy asset cache** ([`src/meshy/cache.mjs`](src/meshy/cache.mjs); dir
    `~/.cache/dream3d/meshy/`) — caches each GLB by `(prompt, mode,
    generation-param signature)`. Shared by the pipeline provider **and**
@@ -148,8 +132,8 @@ Three layers, all **real-mode only** (mock always runs fresh):
 
 ```
 src/
-  pipeline/   orchestrator + planner/asset/critic (real + mock), layout,
-              geometryCheck, fix, response & plan caches, shared types
+  pipeline/   orchestrator + planner/asset/critic, layout, geometryCheck,
+              fix, response & plan caches, shared types
   llm/        headless `claude` CLI transport (claudeCli.ts)
   meshy/      Meshy client, shared GLB cache (cache.mjs), gen params (genParams.mjs)
   render/     headless Chromium + SwiftShader render harness, multi-angle
@@ -171,8 +155,8 @@ index.html · studio.html · viewer.html   Vite multi-page entries
   — cache-aware best-of-N generator CLI; prints a JSON manifest of candidate GLBs.
   Run with `--help` for the full options, cost, and cache behavior.
 - Smoke tests: `scripts/meshy-smoke.mjs`, `scripts/meshy-provider-smoke.mjs`
-  (`npm run smoke:provider`), `scripts/pipeline-mock-smoke.mjs`,
-  `scripts/render-smoke.mjs`, `scripts/critic-render-smoke.mjs`.
+  (`npm run smoke:provider`), `scripts/render-smoke.mjs`,
+  `scripts/critic-render-smoke.mjs`.
 - `scripts/setup-headless-render.sh` — one-shot, no-sudo headless-render host setup.
 
 ### npm scripts

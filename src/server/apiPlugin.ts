@@ -14,8 +14,7 @@ import type { JobStatus, ProgressEvent } from "../api/contract";
 //   GET  /assets/<id>.glb                              -> static GLB from dataDir/assets
 //
 // dataDir follows the convention shared with scripts/meshy-generate.mjs
-// (~/.cache/dream3d). The orchestrator defaults to MOCK mode, so this works
-// offline with no keys.
+// (~/.cache/dream3d).
 const dataDir = join(homedir(), ".cache", "dream3d");
 const assetsDir = join(dataDir, "assets");
 
@@ -86,7 +85,7 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
         // Each ProgressEvent is timestamped + appended to job.log as an English line (formatEvent) and
         // mirrored verbatim to the run's events.jsonl — its own `kind` (plan/asset_done/done/…) tags the
         // line and sets it apart from the llm.call records. Best-effort; logEvent runs in-context.
-        generate(prompt, amendRounds, undefined, (ev) => {
+        generate(prompt, amendRounds, (ev) => {
           job.log.push({ ts: Date.now(), text: formatEvent(ev) });
           logEvent({ ...ev });
         })

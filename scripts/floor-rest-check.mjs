@@ -55,8 +55,9 @@ const { slotSeatOffset } = await import(new URL("../src/render/sceneVisuals.js",
 
 // fix() is the production review-fix applier: a `resize` fix must re-seat the object
 // on the floor at the new scale (src/pipeline/fix.ts). Register the TS resolve hook so
-// plain `node` can import the unbundled .ts source (same pattern as pipeline-mock-smoke.mjs).
+// plain `node` can import the unbundled .ts source.
 register("./ts-resolve-hook.mjs", import.meta.url);
+// fix() is imported from unbundled .ts source via the TS resolve hook above.
 const { fix } = await import(new URL("../src/pipeline/fix.ts", import.meta.url).href);
 
 let failures = 0;

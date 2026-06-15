@@ -19,8 +19,8 @@ export function publishSceneAssets(response: GenerateResponse): GenerateResponse
   for (const pass of response.passes) {
     for (const obj of pass.sceneState.objects) {
       const glbUrl = obj.glbUrl;
-      // Only rewrite ready objects that point at a real local file. Mock
-      // placeholders, missing files, and already-served URLs are left as-is.
+      // Only rewrite ready objects that point at a real local file. Missing files
+      // and already-served URLs are left as-is.
       if (obj.status !== "ready" || typeof glbUrl !== "string" || glbUrl.length === 0) continue;
       if (glbUrl.startsWith("http://") || glbUrl.startsWith("https://") || glbUrl.startsWith("/assets/")) continue;
       if (!existsSync(glbUrl) || !statSync(glbUrl).isFile()) continue;

@@ -4,7 +4,7 @@
 // planner + Meshy preview->refine). The per-asset Meshy cache does NOT help a
 // repeated /api/generate call: the planner emits a fresh meshyPrompt every run,
 // so the Meshy key always misses. Memoizing the WHOLE response keyed by the
-// request (prompt + amendRounds + mode) fixes it — the first run is live, every
+// request (prompt + amendRounds) fixes it — the first run is live, every
 // identical request after is served from disk in well under a second.
 //
 // This stores the orchestrator's RAW output, whose ready glbUrls are LOCAL Meshy
@@ -36,11 +36,10 @@ const cache = createDiskCache<GenerateResponse>({
   validate: validateResponse,
 });
 
-// sha256 of [version, mode, amendRounds, normalizedPrompt].join("::"), first 16
-// hex chars. mode is taken as a plain string (the Mode union is assignable to
-// string) to keep this module free of any orchestrator import.
-export function deriveResponseKey(prompt: string, amendRounds: number, mode: string): string {
-  return cache.deriveKey([mode, String(amendRounds), normalizePrompt(prompt)]);
+// sha256 of [version, amendRounds, normalizedPrompt].join("::"), first 16 hex
+// chars.
+export function deriveResponseKey(prompt: string, amendRounds: number): string {
+  return cache.deriveKey([String(amendRounds), normalizePrompt(prompt)]);
 }
 
 // Returns the cached response for `key`, or null on an EXPECTED miss: no file, a
@@ -52,15 +51,15 @@ export function readCachedResponse(key: string): GenerateResponse | null {
 }
 
 // Persists `response` under `key` inside an envelope carrying CACHE_VERSION and
-// human-readable provenance (prompt/normalizedPrompt/mode/amendRounds/savedAt).
+// human-readable provenance (prompt/normalizedPrompt/amendRounds/savedAt).
 export function writeCachedResponse(
   key: string,
-  meta: { prompt: string; amendRounds: number; mode: string },
+  meta: { prompt: string; amendRounds: number },
   response: GenerateResponse,
 ): void {
   cache.write(
     key,
-    { prompt: meta.prompt, normalizedPrompt: normalizePrompt(meta.prompt), mode: meta.mode, amendRounds: meta.amendRounds },
+    { prompt: meta.prompt, normalizedPrompt: normalizePrompt(meta.prompt), amendRounds: meta.amendRounds },
     response,
   );
 }

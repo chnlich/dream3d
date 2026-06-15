@@ -5,9 +5,9 @@
 //
 // Failure policy (matches the repo's fail-fast principle): network / non-2xx / malformed-shape errors
 // are surfaced loudly in the status line and console — never swallowed. The single tolerated-and-
-// reported failure is a per-pass GLB load: SceneViewer.loadScene is fail-loud, so in MOCK mode its
-// placeholder glbUrls 404 and the call throws. We catch THAT (and only that) and show a banner, while
-// the stepper + object list stay usable because they are updated before loadScene is awaited.
+// reported failure is a per-pass GLB load: SceneViewer.loadScene is fail-loud, so a missing or
+// unloadable glbUrl throws. We catch THAT (and only that) and show a banner, while the stepper +
+// object list stay usable because they are updated before loadScene is awaited.
 import { SceneViewer } from "./viewer/SceneViewer";
 import type { GenerateRequest, JobStartResponse, JobStatus, LogLine, Pass } from "./api/contract";
 import type { SceneState } from "./scene/schema";
@@ -23,7 +23,7 @@ interface ScenePreset {
 const scenePresets = scenePresetsJson as ScenePreset[];
 const DEFAULT_PRESET_ID = "sc-demo";
 
-// Poll cadence for the generate job's progress (a real run is minute-scale; mock finishes instantly).
+// Poll cadence for the generate job's progress (a real run is minute-scale).
 const POLL_INTERVAL_MS = 1000;
 
 // Resolve a required element by id, throwing loudly if it is missing or the wrong tag (fail fast — a
@@ -168,7 +168,7 @@ function renderObjectList(scene: SceneState): void {
 }
 
 // Show pass i (clamped). The label / stepper state / object list are updated BEFORE awaiting loadScene
-// so they stay usable even when the render throws (e.g. MOCK-mode placeholder GLBs that 404).
+// so they stay usable even when the render throws (e.g. a missing or unloadable glbUrl).
 async function renderPass(i: number): Promise<void> {
   if (passes.length === 0) return;
   current = Math.min(Math.max(i, 0), passes.length - 1);
@@ -188,10 +188,7 @@ async function renderPass(i: number): Promise<void> {
     clearBanner();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    showBanner(
-      `Scene render failed: ${message}. ` +
-        "(In mock mode GLB urls are placeholders and 404; real mode resolves them.)",
-    );
+    showBanner(`Scene render failed: ${message}.`);
   }
 }
 

@@ -4,8 +4,8 @@
 // FRESH, non-deterministic meshyPrompt for every object on every run. Downstream,
 // meshyAssetProvider's per-asset Meshy cache is keyed on that meshyPrompt, so it
 // NEVER hits across runs and every run regenerates all GLBs (Meshy credits +
-// minutes). Memoizing the PLAN keyed by the request (prompt + mode) makes the
-// meshyPrompts stable, so the existing Meshy cache hits and assets are reused.
+// minutes). Memoizing the PLAN keyed by the request prompt makes the meshyPrompts
+// stable, so the existing Meshy cache hits and assets are reused.
 //
 // This sits ONE layer below responseCache: the response cache short-circuits a
 // whole identical /api/generate call, while this stabilizes the plan so even a
@@ -35,12 +35,10 @@ const cache = createDiskCache<ScenePlan>({
   validate: validatePlan,
 });
 
-// sha256 of [version, mode, normalizedPrompt].join("::"), first 16 hex chars. mode is
-// taken as a plain string (the Mode union is assignable to string) to keep this module
-// free of any orchestrator import. amendRounds is deliberately absent: the plan does
-// not depend on it (see header).
-export function derivePlanKey(prompt: string, mode: string): string {
-  return cache.deriveKey([mode, normalizePrompt(prompt)]);
+// sha256 of [version, normalizedPrompt].join("::"), first 16 hex chars. amendRounds is
+// deliberately absent: the plan does not depend on it (see header).
+export function derivePlanKey(prompt: string): string {
+  return cache.deriveKey([normalizePrompt(prompt)]);
 }
 
 // Returns the cached plan for `key`, or null on an EXPECTED miss: no file, or a
@@ -52,33 +50,31 @@ export function readCachedPlan(key: string): ScenePlan | null {
 }
 
 // Persists `plan` under `key` inside an envelope carrying PLAN_CACHE_VERSION and
-// human-readable provenance (prompt/normalizedPrompt/mode/savedAt).
-export function writeCachedPlan(key: string, meta: { prompt: string; mode: string }, plan: ScenePlan): void {
-  cache.write(key, { prompt: meta.prompt, normalizedPrompt: normalizePrompt(meta.prompt), mode: meta.mode }, plan);
+// human-readable provenance (prompt/normalizedPrompt/savedAt).
+export function writeCachedPlan(key: string, meta: { prompt: string }, plan: ScenePlan): void {
+  cache.write(key, { prompt: meta.prompt, normalizedPrompt: normalizePrompt(meta.prompt) }, plan);
 }
 
 // Gate + lookup helper, symmetric with generate()'s response-cache gate in the
-// orchestrator: REAL mode only, and DREAM3D_PLAN_CACHE=0 bypasses entirely (read AND
-// write). On a real-mode miss it runs `planFn`, persists the plan, and returns it; on
-// a hit it logs and returns the cached plan; in mock or when bypassed it runs
-// `planFn` directly with no cache. Keeps the orchestrator diff to one line.
+// orchestrator: DREAM3D_PLAN_CACHE=0 bypasses entirely (read AND write). On a hit
+// it logs and returns the cached plan; on a miss it runs `planFn`, persists the
+// plan, and returns it.
 export async function getOrCreatePlan(
   prompt: string,
-  mode: string,
   planFn: () => Promise<ScenePlan>,
 ): Promise<ScenePlan> {
-  const useCache = mode === "real" && process.env.DREAM3D_PLAN_CACHE !== "0";
+  const useCache = process.env.DREAM3D_PLAN_CACHE !== "0";
   if (!useCache) {
-    return planFn(); // mock mode, or explicitly bypassed — always run a fresh plan
+    return planFn();
   }
-  const key = derivePlanKey(prompt, mode);
+  const key = derivePlanKey(prompt);
   const cached = readCachedPlan(key);
   if (cached) {
-    console.log(`[dream3d] plan cache HIT ${key} (mode=${mode})`);
+    console.log(`[dream3d] plan cache HIT ${key}`);
     return cached;
   }
   const plan = await planFn();
-  writeCachedPlan(key, { prompt, mode }, plan);
+  writeCachedPlan(key, { prompt }, plan);
   return plan;
 }
 

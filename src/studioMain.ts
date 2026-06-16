@@ -57,6 +57,8 @@ const elapsedEl = requireEl("elapsed", HTMLElement);
 const estimatedTotalEl = requireEl("estimated-total", HTMLElement);
 const stepListEl = requireEl("step-list", HTMLElement);
 const cachedBadge = requireEl("cached-badge", HTMLElement);
+const assetProgressEl = requireEl("asset-progress", HTMLElement);
+const assetListEl = requireEl("asset-list", HTMLElement);
 
 const viewer = new SceneViewer(canvas);
 
@@ -68,6 +70,14 @@ let current = 0;
 interface Step {
   name: string;
   estimatedSeconds: number;
+}
+
+type AssetRowState = "pending" | "running" | "done" | "failed";
+
+interface AssetRow {
+  index: number;
+  label: string | null;
+  state: AssetRowState;
 }
 
 interface ProgressState {
@@ -82,6 +92,7 @@ interface ProgressState {
   cached: boolean;
   done: boolean;
   error: boolean;
+  assetRows: AssetRow[];
 }
 
 let progressState: ProgressState | null = null;
@@ -126,6 +137,7 @@ function startProgress(jobId: string, amendRounds: number): void {
     cached: false,
     done: false,
     error: false,
+    assetRows: [],
   };
   runIdEl.textContent = jobId;
   progressPanel.hidden = false;
@@ -147,16 +159,12 @@ function advanceToStep(index: number): void {
   updateProgressDisplay();
 }
 
-function applyProgressUpdate(update: {
-  objectCount?: number;
-  currentStepIndex?: number;
-  cached?: boolean;
-  done?: boolean;
-}): void {
+function applyProgressUpdate(update: ProgressUpdate): void {
   if (!progressState) return;
   if (update.objectCount !== undefined) {
     progressState.objectCount = update.objectCount;
     progressState.steps = buildSteps(progressState.amendRounds, update.objectCount);
+    initAssetRows(update.objectCount);
   }
   if (update.currentStepIndex !== undefined) {
     advanceToStep(update.currentStepIndex);
@@ -165,14 +173,113 @@ function applyProgressUpdate(update: {
   }
   if (update.cached) progressState.cached = true;
   if (update.done) progressState.done = true;
+  if (update.assetStart) {
+    setAssetRunning(update.assetStart.index, update.assetStart.label);
+  }
+  if (update.assetDone) {
+    setAssetDone(update.assetDone.label);
+  }
 }
 
-function parseLogLine(line: string): {
+interface ProgressUpdate {
   objectCount?: number;
   currentStepIndex?: number;
   cached?: boolean;
   done?: boolean;
-} | null {
+  assetStart?: { index: number; total: number; label: string };
+  assetDone?: { completed: number; total: number; label: string };
+}
+
+function initAssetRows(count: number): void {
+  if (!progressState) return;
+  progressState.assetRows = Array.from({ length: count }, (_, index) => ({
+    index,
+    label: null,
+    state: "pending",
+  }));
+  renderAssetProgress();
+}
+
+function setAssetRunning(index: number, label: string): void {
+  if (!progressState) return;
+  const row = progressState.assetRows[index];
+  if (!row) return;
+  row.label = label;
+  row.state = "running";
+  renderAssetProgress();
+}
+
+function setAssetDone(label: string): void {
+  if (!progressState) return;
+  const row =
+    progressState.assetRows.find((r) => r.label === label && r.state === "running") ??
+    progressState.assetRows.find((r) => r.state !== "done" && r.state !== "failed");
+  if (!row) return;
+  row.state = "done";
+  renderAssetProgress();
+}
+
+function markIncompleteAssetsFailed(): void {
+  if (!progressState) return;
+  let changed = false;
+  for (const row of progressState.assetRows) {
+    if (row.state !== "done" && row.state !== "failed") {
+      row.state = "failed";
+      changed = true;
+    }
+  }
+  if (changed) renderAssetProgress();
+}
+
+function assetStatusText(state: AssetRowState): string {
+  switch (state) {
+    case "pending":
+      return "waiting…";
+    case "running":
+      return "running…";
+    case "done":
+      return "done";
+    case "failed":
+      return "failed";
+  }
+}
+
+function renderAssetProgress(): void {
+  if (!progressState || progressState.assetRows.length === 0) {
+    assetProgressEl.hidden = true;
+    return;
+  }
+  assetProgressEl.hidden = false;
+  assetListEl.replaceChildren();
+  for (const row of progressState.assetRows) {
+    const li = document.createElement("li");
+    li.className = "asset-row";
+
+    const icon = document.createElement("span");
+    icon.className = `asset-icon asset-state-${row.state}`;
+    if (row.state === "pending" || row.state === "running") {
+      icon.classList.add("spinner");
+    } else if (row.state === "done") {
+      icon.textContent = "✓";
+    } else if (row.state === "failed") {
+      icon.textContent = "✕";
+    }
+
+    const label = document.createElement("span");
+    label.className = "asset-label";
+    label.textContent = row.label ?? "—";
+    label.title = row.label ?? "";
+
+    const status = document.createElement("span");
+    status.className = `asset-status asset-state-${row.state}`;
+    status.textContent = assetStatusText(row.state);
+
+    li.append(icon, label, status);
+    assetListEl.append(li);
+  }
+}
+
+function parseLogLine(line: string): ProgressUpdate | null {
   if (!progressState) return null;
 
   const planDone = line.match(/Plan ready — (\d+) object\(s\)/);
@@ -180,10 +287,20 @@ function parseLogLine(line: string): {
     return { objectCount: parseInt(planDone[1], 10), currentStepIndex: 1 };
   }
 
-  const assetDone = line.match(/Generating asset (\d+)\/(\d+):/);
+  const assetStartMatch = line.match(/^Starting asset (\d+)\/(\d+): (.*)$/);
+  if (assetStartMatch) {
+    const index = parseInt(assetStartMatch[1], 10) - 1;
+    const total = parseInt(assetStartMatch[2], 10);
+    const label = assetStartMatch[3].trim();
+    return { assetStart: { index, total, label } };
+  }
+
+  const assetDone = line.match(/^Generating asset (\d+)\/(\d+): (.*)$/);
   if (assetDone) {
     const completed = parseInt(assetDone[1], 10);
-    return { currentStepIndex: 1 + completed };
+    const total = parseInt(assetDone[2], 10);
+    const label = assetDone[3].trim();
+    return { currentStepIndex: 1 + completed, assetDone: { completed, total, label } };
   }
 
   if (line === "Arranging layout…") {
@@ -504,7 +621,13 @@ async function onGenerate(): Promise<void> {
       }
       if (status.cached) applyProgressUpdate({ cached: true, done: true });
       if (status.status === "error") {
-        if (progressState) progressState.error = true;
+        if (progressState) {
+          progressState.error = true;
+          const assetPhaseEnd = 1 + (progressState.objectCount ?? 0);
+          if (progressState.currentStepIndex < assetPhaseEnd) {
+            markIncompleteAssetsFailed();
+          }
+        }
         stopProgress();
         updateProgressDisplay();
         failGenerate(new Error(status.error ?? "job failed with no error message"));

@@ -46,9 +46,11 @@ prompt
 { passes }  amendRounds + 1 passes: the draft (p0), then one per amend round.
 ```
 
-## Quick start
+## Quick start (local development, real mode)
 
 ```bash
+git clone <repo>
+cd dream3d
 npm install
 bash scripts/setup-headless-render.sh          # one-shot, no-sudo headless-render host setup
 cp config/local.example.json config/local.json # then add your Meshy key (see below)
@@ -58,6 +60,81 @@ npm run dev            # Vite dev server on http://localhost:5173
 Open **http://localhost:5173/studio.html**. The pipeline uses the real Claude +
 Meshy backends, so you also need the local `claude` CLI logged in (see **LLM
 transport**).
+
+## Deploy on a headless Ubuntu server
+
+The repo also runs on a headless Ubuntu 22.04/24.04 host accessed over Tailscale
+(e.g. the `aws-ohio-slurm-login.onca-snapper.ts.net` SLURM login node). The flow
+below is the one verified on that host.
+
+### Prerequisites
+
+- Node.js 20+, npm, and git.
+- An authenticated local `claude` CLI (the planner and vision critic call it
+  headlessly; see **LLM transport**).
+- A Meshy API key for actual asset generation.
+
+### Install and configure
+
+```bash
+git clone <repo>
+cd dream3d
+npm install
+
+cp config/local.example.json config/local.json
+# edit config/local.json and set meshyApiKey to your "msy_..." key.
+```
+
+### Set up headless rendering
+
+```bash
+bash scripts/setup-headless-render.sh
+```
+
+This is idempotent, requires no `sudo`, and:
+
+- Installs the Playwright package under `~/tools/playwright`.
+- Installs the Chromium browser binary under `$XDG_CACHE_HOME/ms-playwright`
+  (falling back to `~/.cache/ms-playwright`), so it respects hosts that keep
+  large caches on scratch storage.
+- Detects the OS codename and maps package names for Ubuntu 24.04 (e.g.
+  `libasound2` → `libasound2t64`, `libcups2` → `libcups2t64`). It works on
+  Ubuntu 22.04 (jammy) and 24.04 (noble); 22.04 is the default when the codename
+  is unknown.
+
+### Verify rendering
+
+```bash
+node scripts/render-smoke.mjs
+# -> scripts/.out/render-smoke.png
+```
+
+### Start the studio
+
+```bash
+npm run dev -- --host
+```
+
+Vite is configured to pin port **5173** (`strictPort`) and allow-list the host's
+Tailscale URL.
+
+### Access the studio
+
+From any machine on the Tailscale network, open:
+
+```
+http://aws-ohio-slurm-login.onca-snapper.ts.net:5173/studio.html
+```
+
+(The hostname is already added to `server.allowedHosts` in `vite.config.ts`.)
+
+If you are not on Tailscale, you can still reach the dev server through an SSH
+tunnel:
+
+```bash
+ssh -L 5173:localhost:5173 <user>@aws-ohio-slurm-login.onca-snapper.ts.net
+# then open http://localhost:5173/studio.html locally
+```
 
 ## Pages
 
@@ -105,9 +182,10 @@ to the `Read` tool). `config/local.json` holds **only** `meshyApiKey`.
   actually generating; a pure cache hit needs no key.
 - **`DREAM3D_RESPONSE_CACHE=0`** — bypass the response cache.
 - **`DREAM3D_PLAN_CACHE=0`** — bypass the plan cache.
-- The dev server pins port **5173** (`strictPort`) and allow-lists a Tailscale
-  Funnel hostname for public HTTPS exposure — see `server.allowedHosts` in
-  [`vite.config.ts`](vite.config.ts).
+- The dev server pins port **5173** (`strictPort`) and allow-lists Tailscale
+  hostnames for public access — the original `chaoasus-1.tailb4091b.ts.net`
+  Funnel URL and the SLURM login node `aws-ohio-slurm-login.onca-snapper.ts.net`
+  — see `server.allowedHosts` in [`vite.config.ts`](vite.config.ts).
 
 ## Caching
 

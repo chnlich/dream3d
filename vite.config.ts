@@ -24,15 +24,17 @@ function apiStubPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [apiPlugin(), apiStubPlugin()],
-  // The dev server is exposed publicly via a Tailscale Funnel HTTPS URL
-  // (https://chaoasus-1.tailb4091b.ts.net:8443 -> 127.0.0.1:5173). Vite 5 rejects
-  // unknown Host headers, so the funnel hostname must be allow-listed; strictPort
-  // keeps Vite pinned to 5173 (the exact port the funnel maps to) instead of
-  // drifting to 5174 if 5173 is busy.
+  // The dev server is exposed publicly via Tailscale (Funnel on the original
+  // dev box, direct Tailscale on the headless SLURM login host). Vite 5 rejects
+  // unknown Host headers, so each hostname must be allow-listed; strictPort
+  // keeps Vite pinned to 5173 instead of drifting to 5174 if 5173 is busy.
   server: {
     port: 5173,
     strictPort: true,
-    allowedHosts: ["chaoasus-1.tailb4091b.ts.net"],
+    allowedHosts: [
+      "chaoasus-1.tailb4091b.ts.net",
+      "aws-ohio-slurm-login.onca-snapper.ts.net",
+    ],
   },
   build: {
     // Match tsconfig target (ES2022) so viewerMain.ts's top-level await transpiles cleanly.

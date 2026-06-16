@@ -24,7 +24,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, resolve as resolvePath, basename } from "node:path";
 import { homedir } from "node:os";
@@ -147,11 +147,29 @@ export const GPU_LAUNCH_ARGS = [
 
 // Host location where Chromium's system libraries were extracted (see docs).
 // We mutate LD_LIBRARY_PATH in-process before launch so the spawned browser
-// child inherits it; Node itself does not need these libraries.
-const HOST_LIB_DIRS = [
-  join(homedir(), "tools", "playwright-libs", "ubuntu2204", "usr", "lib", "x86_64-linux-gnu"),
-  join(homedir(), "tools", "playwright-libs", "ubuntu2204", "lib", "x86_64-linux-gnu"),
-];
+// child inherits it; Node itself does not need these libraries. The directory
+// name follows the OS codename so the same harness works on Ubuntu 22.04 and
+// 24.04 (the setup script extracts the .debs to ubuntu2204 / ubuntu2404).
+function getHostLibDirs(): string[] {
+  const codename = detectUbuntuCodename();
+  const suffix = codename === "noble" ? "ubuntu2404" : "ubuntu2204";
+  return [
+    join(homedir(), "tools", "playwright-libs", suffix, "usr", "lib", "x86_64-linux-gnu"),
+    join(homedir(), "tools", "playwright-libs", suffix, "lib", "x86_64-linux-gnu"),
+  ];
+}
+
+function detectUbuntuCodename(): string {
+  try {
+    const data = readFileSync("/etc/os-release", "utf8");
+    const match = data.match(/^VERSION_CODENAME=(.+)$/m);
+    const value = match?.[1]?.trim().replace(/^["']|["']$/g, "");
+    if (value) return value;
+  } catch {
+    // fall through to default
+  }
+  return "jammy";
+}
 
 // WSL's GPU userspace libraries (libd3d12, libdxcore, the Mesa d3d12 Gallium
 // driver, …). For the GPU path this MUST be prepended FIRST onto the browser
@@ -377,7 +395,7 @@ async function resolveChromium(): Promise<any> {
 function ensureLibraryPath(gpu: boolean): void {
   // Front-of-path priority order. unshift below reverses, so iterate in reverse
   // to land this exact order at the front (WSL GPU libs first when gpu).
-  const wanted = (gpu ? [WSL_GPU_LIB_DIR, ...HOST_LIB_DIRS] : HOST_LIB_DIRS).filter((dir) => existsSync(dir));
+  const wanted = (gpu ? [WSL_GPU_LIB_DIR, ...getHostLibDirs()] : getHostLibDirs()).filter((dir) => existsSync(dir));
   const parts = (process.env.LD_LIBRARY_PATH ?? "").split(":").filter(Boolean);
   let changed = false;
   for (let i = wanted.length - 1; i >= 0; i--) {

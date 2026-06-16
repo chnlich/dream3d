@@ -22,7 +22,7 @@ scripts/render-smoke.mjs` produces `scripts/.out/render-smoke.png` (1024×768, ~
 
 | | |
 |---|---|
-| Host | Ubuntu 22.04.5 LTS (jammy), x86_64, WSL2; **NVIDIA RTX 3060 Laptop GPU** (+ AMD Radeon iGPU) via WSLg |
+| Host | Ubuntu 22.04.5 LTS (jammy) x86_64 WSL2 **or** Ubuntu 24.04.4 LTS (noble) x86_64 headless; NVIDIA GPU on WSL2, software-only fallback on the SLURM login host |
 | Node | v22.22.3 (strips TypeScript types natively → a `.mjs` can `import` the `.ts` harness) |
 | Playwright | 1.60.0 → Chromium **1223**: full `chromium` (GPU path) + `chromium_headless_shell` (software fallback) |
 | three.js | 0.170.0 (vendored in `src/render/vendor/three`) |
@@ -33,12 +33,15 @@ scripts/render-smoke.mjs` produces `scripts/.out/render-smoke.png` (1024×768, ~
 ## Setup from scratch
 
 One command does everything (no `sudo`, installs only under `~/tools` and
-`~/.cache/ms-playwright`, idempotent):
+`$XDG_CACHE_HOME/ms-playwright` / `~/.cache/ms-playwright`, idempotent):
 
 ```bash
 bash scripts/setup-headless-render.sh
 node scripts/render-smoke.mjs        # -> scripts/.out/render-smoke.png
 ```
+
+The script detects the OS codename (jammy/noble) and maps package names
+accordingly, so it works on Ubuntu 22.04 and 24.04.
 
 The script performs the three steps below. Run them by hand if you prefer.
 
@@ -59,8 +62,9 @@ back to `~/tools/playwright/node_modules/playwright`.
 ### 2. Chromium browser binary
 
 ```bash
+export PLAYWRIGHT_BROWSERS_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright"
 ~/tools/playwright/node_modules/.bin/playwright install chromium
-# installs BOTH builds into ~/.cache/ms-playwright:
+# installs BOTH builds into $PLAYWRIGHT_BROWSERS_PATH:
 #   chromium-<rev>                FULL Chromium — required by the GPU path (channel:"chromium")
 #   chromium_headless_shell-<rev> the software-fallback / legacy-headless build
 ```
@@ -76,25 +80,32 @@ back to `~/tools/playwright/node_modules/playwright`.
 
 ### 3. Chromium's system libraries — *without root*
 
-The previously-used `~/tools/playwright-libs/noble/...` is gone. We re-establish it
-by downloading the `.deb`s and extracting them into a user-writable prefix (no
-`sudo`; `apt-get download` and `dpkg-deb -x` do not need root):
+We re-establish the user-writable library prefix by downloading the `.deb`s and
+extracting them (no `sudo`; `apt-get download` and `dpkg-deb -x` do not need
+root). The directory name includes the OS codename so the harness picks the right
+one (`ubuntu2204` for jammy, `ubuntu2404` for noble):
 
 ```bash
-mkdir -p ~/tools/playwright-libs/ubuntu2204 && cd /tmp
-apt-get download \
-  libnspr4 libnss3 libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
-  libcups2 libdbus-1-3 libdrm2 libgbm1 libexpat1 libglib2.0-0 \
-  libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxcomposite1 libxdamage1 \
-  libxext6 libxfixes3 libxkbcommon0 libxrandr2 libxshmfence1
-for d in *.deb; do dpkg-deb -x "$d" ~/tools/playwright-libs/ubuntu2204; done
+CODENAME=$(lsb_release -cs)
+SUFFIX=$([ "$CODENAME" = "noble" ] && echo "ubuntu2404" || echo "ubuntu2204")
+mkdir -p ~/tools/playwright-libs/$SUFFIX && cd /tmp
+
+# On Ubuntu 24.04 (noble) several libraries gained the t64 suffix.
+if [ "$CODENAME" = "noble" ]; then
+  PKGS=(libnspr4 libnss3 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libexpat1 libglib2.0-0t64 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libxshmfence1)
+else
+  PKGS=(libnspr4 libnss3 libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libdbus-1-3 libdrm2 libgbm1 libexpat1 libglib2.0-0 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libxshmfence1)
+fi
+
+apt-get download "${PKGS[@]}"
+for d in *.deb; do dpkg-deb -x "$d" ~/tools/playwright-libs/$SUFFIX; done
 ```
 
 (`libnssutil3` / `libsmime3` are bundled inside `libnss3`, so they are not listed.)
 
 `headless.ts` prepends these dirs to `LD_LIBRARY_PATH` **in-process before launching
 Chromium**, so the spawned browser inherits them — `node scripts/render-smoke.mjs`
-works with no env prefix. Equivalent manual run:
+works with no env prefix. Equivalent manual run (use `ubuntu2404` instead of `ubuntu2204` on Ubuntu 24.04):
 
 ```bash
 LD_LIBRARY_PATH=~/tools/playwright-libs/ubuntu2204/usr/lib/x86_64-linux-gnu:\

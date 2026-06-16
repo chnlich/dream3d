@@ -202,7 +202,7 @@ filesystem path (served automatically over the harness's local HTTP server).
 
 **Non-blank verification.** `scene-page.js` reads the rendered pixels back and
 reports `{ distinctColors, nonBackgroundFraction, meanLuminance, luminanceStdDev }`.
-`assertNonBlank(stats)` throws if the frame is degenerate; the smoke also re-checks
+`assertNonBlank(stats)` returns a warning string if the frame looks degenerate, otherwise `null`; callers decide whether to warn, throw, or ignore. The smoke test turns a returned warning back into a hard error; `src/render/multiangle/index.ts` warns, dumps a debug PNG, and only throws when `DREAM3D_RENDER_STRICT_BLANK=1`. The smoke also re-checks
 the PNG header (valid signature + expected dimensions) and file size. For the smoke
 scene: `distinctColors=135`, `nonBackgroundFraction=53.2%`, `luminanceStdDev=48.1`.
 

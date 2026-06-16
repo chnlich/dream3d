@@ -52,15 +52,11 @@ function check(label, ok, detail) {
   if (!ok) failures++;
 }
 
-// assertNonBlank throws on a blank/degenerate frame; turn it into a boolean so a blank render
-// reports as a failed assertion instead of aborting the whole script.
+// assertNonBlank returns a warning string on a blank/degenerate frame and null otherwise;
+// turn it into a boolean so a blank render reports as a failed assertion instead of
+// aborting the whole script.
 function isNonBlank(stats) {
-  try {
-    assertNonBlank(stats);
-    return true;
-  } catch {
-    return false;
-  }
+  return assertNonBlank(stats) === null;
 }
 
 // --- 1. PURE: failed reads differently from pending -------------------------

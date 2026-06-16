@@ -61,6 +61,31 @@ Open **http://localhost:5173/studio.html**. The pipeline uses the real Claude +
 Meshy backends, so you also need the local `claude` CLI logged in (see **LLM
 transport**).
 
+## Development with Python backend
+
+Phase 0.5 adds a Python FastAPI backend alongside the existing TypeScript backend.
+The Vite dev server proxies `/api` and `/assets` to the Python backend on port
+`8000`, so the studio UI talks to Python automatically while `npm run dev` is
+running.
+
+```bash
+# 1. Start the Python backend
+cd backend
+uv sync
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. In another terminal, start the Vite dev server (from the repo root)
+npm run dev -- --host
+
+# 3. Open the studio
+http://aws-ohio-slurm-login.onca-snapper.ts.net:5173/studio.html
+```
+
+The mock pipeline sleeps and emits progress log entries; a run completes in
+~10–20 seconds and renders a single placeholder object. The existing TS-only dev
+mode (`npm run dev` without the Python backend) still serves the frontend; `/api`
+will return `501` because the Python backend is not reachable, which is expected.
+
 ## Deploy on a headless Ubuntu server
 
 The repo also runs on a headless Ubuntu 22.04/24.04 host accessed over Tailscale

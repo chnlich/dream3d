@@ -23,6 +23,29 @@ interface ScenePreset {
 const scenePresets = scenePresetsJson as ScenePreset[];
 const DEFAULT_PRESET_ID = "sc-demo";
 
+// Optional base URL for API/asset requests. In dev mode the Vite server proxies
+// /api and /assets to the Python backend, so the default empty string (relative
+// paths) is correct. Set VITE_API_BASE_URL to hit the backend directly, e.g.
+// when running the built frontend against a remote backend.
+const API_BASE: string = (import.meta.env as Record<string, string | undefined>).VITE_API_BASE_URL ?? "";
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
+function resolveAssetUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  if (url.startsWith("/assets/")) return `${API_BASE}${url}`;
+  return url;
+}
+
+function resolveSceneStateAssets(scene: SceneState): SceneState {
+  for (const obj of scene.objects) {
+    obj.glbUrl = resolveAssetUrl(obj.glbUrl);
+  }
+  return scene;
+}
+
 // Poll cadence for the generate job's progress (a real run is minute-scale).
 const POLL_INTERVAL_MS = 1000;
 
@@ -579,7 +602,7 @@ async function onGenerate(): Promise<void> {
     const parsedRounds = Number.parseInt(amendRoundsInput.value, 10);
     const amendRounds = Number.isNaN(parsedRounds) ? 0 : Math.max(0, parsedRounds);
     const body: GenerateRequest = { prompt, amendRounds };
-    const res = await fetch("/api/generate", {
+    const res = await fetch(apiUrl("/api/generate"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -605,7 +628,7 @@ async function onGenerate(): Promise<void> {
   let shown = 0;
   const poll = async (): Promise<void> => {
     try {
-      const res = await fetch(`/api/generate/${jobId}`);
+      const res = await fetch(apiUrl(`/api/generate/${jobId}`));
       if (!res.ok) {
         throw new Error(`/api/generate/${jobId} ${res.status}: ${await res.text()}`);
       }
@@ -646,6 +669,9 @@ async function onGenerate(): Promise<void> {
         throw new Error(`malformed job result: expected non-empty passes[], got ${got}`);
       }
       passes = result.passes;
+      for (const pass of passes) {
+        resolveSceneStateAssets(pass.sceneState);
+      }
       current = 0;
       stepperEl.hidden = false;
       setStatus(`Done — ${passes.length} pass${passes.length === 1 ? "" : "es"} for “${prompt}”.`);

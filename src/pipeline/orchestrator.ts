@@ -23,9 +23,8 @@ const ASSET_CONCURRENCY = 20; // Meshy allows up to 20 parallel preview tasks
 // served from the on-disk response cache: the first run is live (minutes), every
 // repeat is sub-second and spends ZERO Meshy credits. DREAM3D_RESPONSE_CACHE=0
 // bypasses the cache entirely (both read and write). `onEvent` streams progress
-// on a live run; a cache HIT returns instantly and emits no events — the server
-// completes the job on promise resolution, not on a terminal event, so an empty
-// progress log is correct.
+// on a live run; a cache HIT returns instantly after emitting a single `cached`
+// event so the server can mark the job as served from cache.
 export async function generate(
   prompt: string,
   amendRounds: number,

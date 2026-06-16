@@ -20,8 +20,9 @@ const dataDir = join(homedir(), ".cache", "dream3d");
 const assetsDir = join(dataDir, "assets");
 
 // A generate run is minute-scale in real mode, so POST starts it in the background and returns a
-// jobId; the client polls for the streaming log + final result. Single Node process => a
-// module-level in-memory Map is the whole job store (no persistence needed for the dev server).
+// jobId; the client polls for the streaming log + final result. The in-memory Map is the primary
+// job store, hydrated from disk on server start and persisted to disk on every state change so jobs
+// survive a Vite dev-server restart.
 const jobs = new Map<string, JobStatus>();
 
 export function apiPlugin(): Plugin {

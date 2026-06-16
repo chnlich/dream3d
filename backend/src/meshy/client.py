@@ -7,6 +7,7 @@ Bearer header. Fails loud on HTTP errors, terminal task states, and timeouts.
 import asyncio
 import json
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -100,7 +101,7 @@ class MeshyClient:
 
     async def poll_task(self, task_id: str) -> MeshyTask:
         """Poll the current state of a task."""
-        url = f"{MESHY_BASE_URL}{TEXT_TO_3D_PATH}/{task_id}"
+        url = f"{MESHY_BASE_URL}{TEXT_TO_3D_PATH}/{quote(task_id, safe='')}"
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=self._auth_headers)
         if response.status_code >= 400:

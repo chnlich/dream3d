@@ -142,6 +142,8 @@ function formatEvent(ev: ProgressEvent): string {
       return "Arranging layout…";
     case "render":
       return `Amend ${ev.round}: rendering`;
+    case "blank_warning":
+      return `Render warning for ${ev.view}: ${ev.warning}`;
     case "critique":
       return `Amend ${ev.round}: ${ev.issueCount} issue(s) found`;
     case "fix":

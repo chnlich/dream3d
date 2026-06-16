@@ -42,6 +42,11 @@ export interface ViewShot {
   durationMs: number;
   /** The concrete camera rendered, after resolving target / direction. */
   camera: { position: Vec3; target: Vec3 };
+  /**
+   * Set when the frame tripped the blank heuristic but was kept (non-strict
+   * mode). Carried back so callers can surface it in logs / UI.
+   */
+  blankWarning?: string;
 }
 
 /** Options for captureViews. All optional; see the defaults in ./index.ts. */
@@ -62,4 +67,9 @@ export interface CaptureOptions {
   browser?: any;
   /** Assert each rendered frame is non-blank (default true). */
   assertNonBlank?: boolean;
+  /**
+   * Optional job/run id included in blank-frame debug PNG filenames. Falls back
+   * to a short generated id if omitted.
+   */
+  jobId?: string;
 }

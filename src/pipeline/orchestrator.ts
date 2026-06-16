@@ -9,6 +9,7 @@ import { claudeVisionCritic } from "./claudeVisionCritic";
 import { launchBrowser, type RenderInput } from "../render/headless";
 import { captureViews } from "../render/multiangle/index";
 import { criticCameras } from "../render/criticCameras";
+import { currentRunId } from "../log/audit";
 import { deriveResponseKey, readCachedResponse, writeCachedResponse } from "./responseCache";
 import { getOrCreatePlan } from "./planCache";
 
@@ -83,7 +84,7 @@ async function runPipeline(
   try {
     for (let round = 1; round <= amendRounds; round++) {
       onEvent?.({ kind: "render", round });
-      const views = await captureSceneViews(scene, browser);
+      const views = await captureSceneViews(scene, browser, onEvent);
       const issues = [...geometryCheck(scene), ...(await claudeVisionCritic.review({ scene, views }))];
       onEvent?.({ kind: "critique", round, issueCount: issues.length });
       if (issues.length === 0) {
@@ -104,8 +105,17 @@ async function runPipeline(
 
 // Render the working scene from the critic's framing angles over the warm
 // browser, returning one labeled PNG data URL per view for the vision critic.
-async function captureSceneViews(scene: SceneState, browser: any): Promise<{ name: string; dataUrl: string }[]> {
-  const shots = await captureViews(toRenderInput(scene), criticCameras(scene.room), { browser });
+async function captureSceneViews(
+  scene: SceneState,
+  browser: any,
+  onEvent?: (ev: ProgressEvent) => void,
+): Promise<{ name: string; dataUrl: string }[]> {
+  const shots = await captureViews(toRenderInput(scene), criticCameras(scene.room), { browser, jobId: currentRunId() });
+  for (const shot of shots) {
+    if (shot.blankWarning) {
+      onEvent?.({ kind: "blank_warning", view: shot.name, warning: shot.blankWarning });
+    }
+  }
   return shots.map((s) => ({ name: s.name, dataUrl: `data:image/png;base64,${s.png.toString("base64")}` }));
 }
 

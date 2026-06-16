@@ -21,6 +21,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 
 import type { CameraSpec, CaptureOptions, ViewShot } from "./types";
 import type { RenderInput, RenderOptions, RenderSession, RenderStats, Vec3 } from "../headless";
@@ -30,7 +32,7 @@ const { createRenderSession, launchBrowser, assertNonBlank } = (await import(
 )) as {
   createRenderSession: (input: RenderInput, options?: RenderOptions) => Promise<RenderSession>;
   launchBrowser: () => Promise<any>;
-  assertNonBlank: (stats: RenderStats) => void;
+  assertNonBlank: (stats: RenderStats) => string | null;
 };
 
 /** A CameraSpec after target / direction has been resolved to a single point. */
@@ -96,14 +98,23 @@ export async function captureViews(
         const startedAt = performance.now();
         const { png, stats } = await session.renderView(cam.camera);
         const durationMs = performance.now() - startedAt;
+        const shot: ViewShot = { name: cam.name, png, stats, durationMs, camera: cam.camera };
         if (opts.assertNonBlank !== false) {
           try {
-            assertNonBlank(stats);
+            const warning = assertNonBlank(stats);
+            if (warning) {
+              console.warn(`[blank warning] view "${cam.name}": ${warning}`);
+              await dumpBlankPng(cam.name, png, opts.jobId);
+              if (process.env.DREAM3D_RENDER_STRICT_BLANK === "1") {
+                throw new Error(`Render looks blank: ${warning}`);
+              }
+              shot.blankWarning = warning;
+            }
           } catch (error) {
             throw new Error(`view "${cam.name}": ${(error as Error).message}`);
           }
         }
-        shots.push({ name: cam.name, png, stats, durationMs, camera: cam.camera });
+        shots.push(shot);
       }
     } finally {
       await session.close();
@@ -162,4 +173,19 @@ async function writeOutputs(outDir: string, shots: ViewShot[]): Promise<void> {
   const { width, height } = shots[0].stats;
   const manifest = { width, height, views };
   await writeFile(join(outDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/**
+ * Persist a blank-looking frame to ~/.cache/dream3d/debug/ for later inspection.
+ * The filename includes the view name, job/run id, and timestamp so concurrent
+ * renders never collide.
+ */
+async function dumpBlankPng(viewName: string, png: Buffer, jobId?: string): Promise<void> {
+  const debugDir = join(homedir(), ".cache", "dream3d", "debug");
+  const safeView = viewName.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const id = jobId ?? randomUUID().slice(0, 8);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const fileName = `blank-${safeView}-${id}-${timestamp}.png`;
+  await mkdir(debugDir, { recursive: true });
+  await writeFile(join(debugDir, fileName), png);
 }

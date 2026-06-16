@@ -351,17 +351,24 @@ async function logWebglRenderer(browser: any): Promise<void> {
   }
 }
 
-/** Throws if `stats` indicates a blank/degenerate frame. Shared by the smoke script. */
-export function assertNonBlank(stats: RenderStats): void {
+/**
+ * Returns a human-readable warning if `stats` indicates a blank/degenerate frame,
+ * otherwise `null`. Shared by the smoke script and multi-angle capture.
+ *
+ * The three heuristics and their thresholds are intentionally kept stable;
+ * callers decide whether to warn, throw, or ignore.
+ */
+export function assertNonBlank(stats: RenderStats): string | null {
   if (stats.distinctColors < 8) {
-    throw new Error(`Render looks blank: only ${stats.distinctColors} distinct colors`);
+    return `only ${stats.distinctColors} distinct colors`;
   }
   if (stats.nonBackgroundFraction < 0.02) {
-    throw new Error(`Render looks blank: only ${(stats.nonBackgroundFraction * 100).toFixed(2)}% of pixels differ from the background`);
+    return `only ${(stats.nonBackgroundFraction * 100).toFixed(2)}% of pixels differ from the background`;
   }
   if (stats.luminanceStdDev < 4) {
-    throw new Error(`Render looks blank: luminance std-dev ${stats.luminanceStdDev.toFixed(2)} is too flat`);
+    return `luminance std-dev ${stats.luminanceStdDev.toFixed(2)} is too flat`;
   }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

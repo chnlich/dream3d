@@ -39,7 +39,10 @@ await writeFile(OUT_PATH, png);
 //  - parse the PNG header to confirm a valid image of the expected dimensions
 //  - confirm the file is non-trivially sized
 const header = parsePngHeader(png);
-assertNonBlank(stats);
+const blankWarning = assertNonBlank(stats);
+if (blankWarning) {
+  throw new Error(`Render looks blank: ${blankWarning}`);
+}
 if (png.length < 4000) {
   throw new Error(`PNG is suspiciously small (${png.length} bytes) — likely blank`);
 }

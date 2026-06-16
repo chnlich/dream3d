@@ -182,6 +182,9 @@ to the `Read` tool). `config/local.json` holds **only** `meshyApiKey`.
   actually generating; a pure cache hit needs no key.
 - **`DREAM3D_RESPONSE_CACHE=0`** — bypass the response cache.
 - **`DREAM3D_PLAN_CACHE=0`** — bypass the plan cache.
+- **`DREAM3D_RENDER_STRICT_BLANK=1`** — make the headless renderer treat
+  blank-looking frames as hard errors again (default is a warning + debug PNG
+  dump so dark scenes do not kill the amend loop).
 - The dev server pins port **5173** (`strictPort`) and allow-lists Tailscale
   hostnames for public access — the original `chaoasus-1.tailb4091b.ts.net`
   Funnel URL and the SLURM login node `aws-ohio-slurm-login.onca-snapper.ts.net`

@@ -24,6 +24,7 @@ export type ProgressEvent =
   | { kind: "asset_done"; index: number; total: number; completed: number; label: string }
   | { kind: "layout" }
   | { kind: "render"; round: number }
+  | { kind: "blank_warning"; view: string; warning: string }
   | { kind: "critique"; round: number; issueCount: number }
   | { kind: "fix"; round: number; issueCount: number }
   | { kind: "clean"; round: number }

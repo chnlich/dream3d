@@ -49,11 +49,238 @@ const nextBtn = requireEl("next", HTMLButtonElement);
 const passLabel = requireEl("pass-label", HTMLElement);
 const objectList = requireEl("object-list", HTMLElement);
 const logEl = requireEl("log", HTMLPreElement);
+const progressPanel = requireEl("progress-panel", HTMLElement);
+const runIdEl = requireEl("run-id", HTMLElement);
+const copyRunIdBtn = requireEl("copy-run-id", HTMLButtonElement);
+const progressFill = requireEl("progress-fill", HTMLElement);
+const elapsedEl = requireEl("elapsed", HTMLElement);
+const estimatedTotalEl = requireEl("estimated-total", HTMLElement);
+const stepListEl = requireEl("step-list", HTMLElement);
+const cachedBadge = requireEl("cached-badge", HTMLElement);
 
 const viewer = new SceneViewer(canvas);
 
 let passes: Pass[] = [];
 let current = 0;
+
+// Progress panel state: tracks the Run ID, the list of pipeline steps, and the active step so the
+// right-hand panel can show a progress bar, elapsed/estimated time, and a cached/error badge.
+interface Step {
+  name: string;
+  estimatedSeconds: number;
+}
+
+interface ProgressState {
+  jobId: string;
+  amendRounds: number;
+  objectCount: number | null;
+  steps: Step[];
+  currentStepIndex: number;
+  lastAdvanceAt: number;
+  startedAt: number;
+  elapsedInterval: number | null;
+  cached: boolean;
+  done: boolean;
+  error: boolean;
+}
+
+let progressState: ProgressState | null = null;
+
+function buildSteps(amendRounds: number, objectCount: number | null): Step[] {
+  const steps: Step[] = [{ name: "plan", estimatedSeconds: 25 }];
+  const count = objectCount ?? 1;
+  for (let i = 0; i < count; i++) {
+    steps.push({ name: `asset ${i + 1}`, estimatedSeconds: 30 });
+  }
+  steps.push({ name: "layout", estimatedSeconds: 1 });
+  for (let r = 1; r <= amendRounds; r++) {
+    steps.push({ name: `render ${r}`, estimatedSeconds: 20 });
+    steps.push({ name: `critique ${r}`, estimatedSeconds: 45 });
+    steps.push({ name: `fix ${r}`, estimatedSeconds: 1 });
+  }
+  steps.push({ name: "done", estimatedSeconds: 0 });
+  return steps;
+}
+
+function estimatedTotalSeconds(steps: Step[]): number {
+  return steps.reduce((sum, step) => sum + step.estimatedSeconds, 0);
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
+
+function startProgress(jobId: string, amendRounds: number): void {
+  progressState = {
+    jobId,
+    amendRounds,
+    objectCount: null,
+    steps: buildSteps(amendRounds, null),
+    currentStepIndex: 0,
+    lastAdvanceAt: Date.now(),
+    startedAt: Date.now(),
+    elapsedInterval: window.setInterval(updateProgressDisplay, 250),
+    cached: false,
+    done: false,
+    error: false,
+  };
+  runIdEl.textContent = jobId;
+  progressPanel.hidden = false;
+  cachedBadge.hidden = true;
+  updateProgressDisplay();
+}
+
+function stopProgress(): void {
+  if (progressState?.elapsedInterval) {
+    window.clearInterval(progressState.elapsedInterval);
+    progressState.elapsedInterval = null;
+  }
+}
+
+function advanceToStep(index: number): void {
+  if (!progressState) return;
+  progressState.currentStepIndex = Math.max(progressState.currentStepIndex, index);
+  progressState.lastAdvanceAt = Date.now();
+  updateProgressDisplay();
+}
+
+function applyProgressUpdate(update: {
+  objectCount?: number;
+  currentStepIndex?: number;
+  cached?: boolean;
+  done?: boolean;
+}): void {
+  if (!progressState) return;
+  if (update.objectCount !== undefined) {
+    progressState.objectCount = update.objectCount;
+    progressState.steps = buildSteps(progressState.amendRounds, update.objectCount);
+  }
+  if (update.currentStepIndex !== undefined) {
+    advanceToStep(update.currentStepIndex);
+  } else if (update.objectCount !== undefined) {
+    updateProgressDisplay();
+  }
+  if (update.cached) progressState.cached = true;
+  if (update.done) progressState.done = true;
+}
+
+function parseLogLine(line: string): {
+  objectCount?: number;
+  currentStepIndex?: number;
+  cached?: boolean;
+  done?: boolean;
+} | null {
+  if (!progressState) return null;
+
+  const planDone = line.match(/Plan ready — (\d+) object\(s\)/);
+  if (planDone) {
+    return { objectCount: parseInt(planDone[1], 10), currentStepIndex: 1 };
+  }
+
+  const assetDone = line.match(/Generating asset (\d+)\/(\d+):/);
+  if (assetDone) {
+    const completed = parseInt(assetDone[1], 10);
+    return { currentStepIndex: 1 + completed };
+  }
+
+  if (line === "Arranging layout…") {
+    const layoutIndex = 1 + (progressState.objectCount ?? 1);
+    return { currentStepIndex: layoutIndex + 1 };
+  }
+
+  const renderMatch = line.match(/Amend (\d+): rendering/);
+  if (renderMatch) {
+    const round = parseInt(renderMatch[1], 10);
+    const layoutIndex = 1 + (progressState.objectCount ?? 1);
+    return { currentStepIndex: layoutIndex + 1 + (round - 1) * 3 };
+  }
+
+  const critiqueMatch = line.match(/Amend (\d+): (\d+) issue\(s\) found/);
+  if (critiqueMatch) {
+    const round = parseInt(critiqueMatch[1], 10);
+    const layoutIndex = 1 + (progressState.objectCount ?? 1);
+    return { currentStepIndex: layoutIndex + 2 + (round - 1) * 3 };
+  }
+
+  const fixMatch = line.match(/Amend (\d+): applied fixes/);
+  if (fixMatch) {
+    const round = parseInt(fixMatch[1], 10);
+    const layoutIndex = 1 + (progressState.objectCount ?? 1);
+    return { currentStepIndex: layoutIndex + 3 + (round - 1) * 3 };
+  }
+
+  const cleanMatch = line.match(/Amend (\d+): clean/);
+  if (cleanMatch) {
+    return { done: true };
+  }
+
+  if (line.match(/Done — \d+ pass\(es\)/)) {
+    return { done: true };
+  }
+
+  if (line.includes("served from cache")) {
+    return { cached: true, done: true };
+  }
+
+  return null;
+}
+
+function updateProgressDisplay(): void {
+  if (!progressState) return;
+  const state = progressState;
+  const now = Date.now();
+  const elapsedMs = now - state.startedAt;
+  elapsedEl.textContent = `Elapsed: ${formatDuration(elapsedMs / 1000)}`;
+
+  if (state.objectCount !== null) {
+    const totalEst = estimatedTotalSeconds(state.steps);
+    estimatedTotalEl.hidden = false;
+    estimatedTotalEl.textContent = `Estimated total: ${formatDuration(totalEst)}`;
+  } else {
+    estimatedTotalEl.hidden = true;
+  }
+
+  const totalUnits = state.steps.length;
+  const completedUnits = Math.min(state.currentStepIndex, totalUnits - 1);
+  const currentStep = state.steps[state.currentStepIndex];
+
+  let withinCurrent = 0;
+  if (currentStep && currentStep.estimatedSeconds > 0 && !state.done && !state.error) {
+    const elapsedInStepMs = now - state.lastAdvanceAt;
+    withinCurrent = Math.min(elapsedInStepMs / (currentStep.estimatedSeconds * 1000), 1);
+  }
+
+  let fraction = (completedUnits + withinCurrent) / totalUnits;
+  if (state.done || state.cached) fraction = 1;
+
+  progressFill.style.width = `${fraction * 100}%`;
+  progressFill.classList.toggle("error", state.error);
+  progressFill.classList.toggle("cached", state.cached && !state.error);
+  cachedBadge.hidden = !state.cached;
+
+  stepListEl.replaceChildren();
+  for (let i = 0; i < state.steps.length; i++) {
+    const step = state.steps[i];
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = step.name;
+    const time = document.createElement("span");
+    time.textContent = step.estimatedSeconds > 0 ? `~${step.estimatedSeconds}s` : "";
+    li.append(name, time);
+
+    if (state.error && i === state.currentStepIndex) {
+      li.classList.add("error");
+    } else if (i < state.currentStepIndex || state.done || state.cached) {
+      li.classList.add("done");
+    } else if (i === state.currentStepIndex) {
+      li.classList.add("current");
+    }
+    stepListEl.append(li);
+  }
+}
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -252,6 +479,7 @@ async function onGenerate(): Promise<void> {
       throw new Error(`malformed /api/generate response: expected { jobId }, got ${got}`);
     }
     jobId = started.jobId;
+    startProgress(jobId, amendRounds);
   } catch (err) {
     failGenerate(err);
     return;
@@ -267,17 +495,30 @@ async function onGenerate(): Promise<void> {
         throw new Error(`/api/generate/${jobId} ${res.status}: ${await res.text()}`);
       }
       const status = (await res.json()) as JobStatus;
+      const previouslyShown = shown;
       shown = appendLogLines(status.log, shown);
+
+      for (let i = previouslyShown; i < status.log.length; i++) {
+        const update = parseLogLine(status.log[i].text);
+        if (update) applyProgressUpdate(update);
+      }
+      if (status.cached) applyProgressUpdate({ cached: true, done: true });
+      if (status.status === "error") {
+        if (progressState) progressState.error = true;
+        stopProgress();
+        updateProgressDisplay();
+        failGenerate(new Error(status.error ?? "job failed with no error message"));
+        return;
+      }
 
       if (status.status === "running") {
         window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
         return;
       }
-      if (status.status === "error") {
-        failGenerate(new Error(status.error ?? "job failed with no error message"));
-        return;
-      }
       // status === "done": render the result's passes (fail loud if missing/empty).
+      if (progressState) progressState.done = true;
+      stopProgress();
+      updateProgressDisplay();
       const result = status.result;
       if (!result || !Array.isArray(result.passes) || result.passes.length === 0) {
         const got = JSON.stringify(result).slice(0, 300);
@@ -299,6 +540,18 @@ async function onGenerate(): Promise<void> {
 generateBtn.addEventListener("click", () => void onGenerate());
 promptInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") void onGenerate();
+});
+copyRunIdBtn.addEventListener("click", async () => {
+  const id = runIdEl.textContent ?? "";
+  if (!id) return;
+  try {
+    await navigator.clipboard.writeText(id);
+    const original = copyRunIdBtn.textContent;
+    copyRunIdBtn.textContent = "Copied";
+    window.setTimeout(() => (copyRunIdBtn.textContent = original), 1200);
+  } catch (err) {
+    console.error("[studio] failed to copy run id:", err);
+  }
 });
 prevBtn.addEventListener("click", () => void renderPass(current - 1));
 nextBtn.addEventListener("click", () => void renderPass(current + 1));

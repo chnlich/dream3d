@@ -6,6 +6,7 @@ import { join, normalize } from "node:path";
 import { generate } from "../pipeline/orchestrator";
 import { publishSceneAssets } from "./assetBridge";
 import { logEvent, mirrorRunAssets, withRun } from "../log/audit";
+import { loadHistoricalJobs, persistJob } from "./jobStore";
 import type { JobStatus, ProgressEvent } from "../api/contract";
 
 // Vite dev-middleware plugin for the dream3d backend:
@@ -27,6 +28,9 @@ export function apiPlugin(): Plugin {
   return {
     name: "dream3d-api",
     configureServer(server) {
+      for (const [jobId, job] of loadHistoricalJobs()) {
+        jobs.set(jobId, job);
+      }
       server.middlewares.use("/api/generate", (req, res) => {
         void handleGenerate(req, res);
       });
@@ -77,6 +81,7 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
       const jobId = crypto.randomUUID();
       const job: JobStatus = { status: "running", log: [] };
       jobs.set(jobId, job);
+      persistJob(jobId, job);
       // Start the run WITHOUT awaiting — the client polls GET /api/generate/<jobId> for progress.
       // withRun binds jobId as the audit runId for the WHOLE promise chain (a synchronous call that
       // returns at once), so every nested runClaude / meshyAssetProvider call and the progress mirror
@@ -86,8 +91,12 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
         // mirrored verbatim to the run's events.jsonl — its own `kind` (plan/asset_done/done/…) tags the
         // line and sets it apart from the llm.call records. Best-effort; logEvent runs in-context.
         generate(prompt, amendRounds, (ev) => {
+          if (ev.kind === "cached") {
+            job.cached = true;
+          }
           job.log.push({ ts: Date.now(), text: formatEvent(ev) });
           logEvent({ ...ev });
+          persistJob(jobId, job);
         })
           .then((result) => {
             job.status = "done";
@@ -96,11 +105,13 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
             // Bridge ready GLBs to browser-fetchable /assets URLs HERE (the poll result, where the
             // passes reach the client) — NOT on the POST response, which only carries the jobId.
             job.result = publishSceneAssets(result);
+            persistJob(jobId, job);
           })
           .catch((err) => {
             job.status = "error";
             job.error = err instanceof Error ? err.message : String(err);
             console.error("[dream3d-api] job failed:", err);
+            persistJob(jobId, job);
           });
       });
       sendJson(res, 202, { jobId });
@@ -138,6 +149,8 @@ function formatEvent(ev: ProgressEvent): string {
       return `Amend ${ev.round}: clean`;
     case "done":
       return `Done — ${ev.passCount} pass(es)`;
+    case "cached":
+      return "Response served from cache";
   }
 }
 

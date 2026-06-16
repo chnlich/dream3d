@@ -27,7 +27,8 @@ export type ProgressEvent =
   | { kind: "critique"; round: number; issueCount: number }
   | { kind: "fix"; round: number; issueCount: number }
   | { kind: "clean"; round: number }
-  | { kind: "done"; passCount: number };
+  | { kind: "done"; passCount: number }
+  | { kind: "cached" };
 
 // One rendered progress line, timestamped server-side (Date.now()) when the event fired.
 export interface LogLine {
@@ -47,4 +48,5 @@ export interface JobStatus {
   log: LogLine[];
   result?: GenerateResponse;
   error?: string;
+  cached?: boolean;
 }

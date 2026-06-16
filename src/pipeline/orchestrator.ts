@@ -37,6 +37,7 @@ export async function generate(
     const cached = readCachedResponse(key);
     if (cached) {
       console.log(`[dream3d] response cache HIT ${key} (amendRounds=${amendRounds})`);
+      onEvent?.({ kind: "cached" });
       return cached;
     }
     const result = await runPipeline(prompt, amendRounds, onEvent);

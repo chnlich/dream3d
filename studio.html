@@ -198,6 +198,89 @@
         background: #ffe3e3;
         color: #c92a2a;
       }
+      .progress-panel {
+        flex: 0 0 auto;
+        padding: 12px;
+        border-bottom: 1px solid #e1e5ea;
+      }
+      .progress-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+      .progress-run-label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #7b8794;
+      }
+      .run-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        background: #eef1f4;
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: #1f2933;
+      }
+      #copy-run-id {
+        padding: 2px 8px;
+        font-size: 12px;
+      }
+      .progress-bar-bg {
+        height: 8px;
+        background: #e4e7eb;
+        border-radius: 4px;
+        overflow: hidden;
+        margin: 8px 0;
+      }
+      .progress-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: #2563eb;
+        border-radius: 4px;
+        transition: width 0.25s ease;
+      }
+      .progress-bar-fill.error {
+        background: #c92a2a;
+      }
+      .progress-bar-fill.cached {
+        background: #2b8a3e;
+      }
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #52606d;
+        margin-bottom: 8px;
+      }
+      .step-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: 12px;
+      }
+      .step-list li {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 0;
+        color: #7b8794;
+      }
+      .step-list li.current {
+        color: #1f2933;
+        font-weight: 600;
+      }
+      .step-list li.done {
+        color: #2b8a3e;
+      }
+      .step-list li.error {
+        color: #c92a2a;
+      }
+      .badge-cached {
+        background: #d3f9d8;
+        color: #2b8a3e;
+      }
     </style>
   </head>
   <body>
@@ -217,6 +300,22 @@
     <main>
       <canvas id="viewer"></canvas>
       <aside class="panel">
+        <div id="progress-panel" class="progress-panel" hidden>
+          <div class="progress-header">
+            <span class="progress-run-label">Run ID</span>
+            <code id="run-id" class="run-id"></code>
+            <button id="copy-run-id" type="button" title="Copy Run ID">Copy</button>
+            <span id="cached-badge" class="badge badge-cached" hidden>Cached</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="progress-fill" class="progress-bar-fill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="elapsed">Elapsed: 0s</span>
+            <span id="estimated-total" hidden></span>
+          </div>
+          <ul id="step-list" class="step-list"></ul>
+        </div>
         <div id="stepper" class="stepper" hidden>
           <button id="prev" disabled>Prev</button>
           <span id="pass-label">Pass 0 / 0</span>

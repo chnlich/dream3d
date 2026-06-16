@@ -177,7 +177,7 @@ function applyProgressUpdate(update: ProgressUpdate): void {
     setAssetRunning(update.assetStart.index, update.assetStart.label);
   }
   if (update.assetDone) {
-    setAssetDone(update.assetDone.label);
+    setAssetDone(update.assetDone.completed - 1);
   }
 }
 
@@ -209,11 +209,9 @@ function setAssetRunning(index: number, label: string): void {
   renderAssetProgress();
 }
 
-function setAssetDone(label: string): void {
+function setAssetDone(index: number): void {
   if (!progressState) return;
-  const row =
-    progressState.assetRows.find((r) => r.label === label && r.state === "running") ??
-    progressState.assetRows.find((r) => r.state !== "done" && r.state !== "failed");
+  const row = progressState.assetRows[index];
   if (!row) return;
   row.state = "done";
   renderAssetProgress();

@@ -17,7 +17,7 @@ import { getOrCreatePlan } from "./planCache";
 // draft plus one per amend round); every pushed sceneState is a deep clone so the
 // mutable working object is never shared across passes.
 
-const ASSET_CONCURRENCY = 3;
+const ASSET_CONCURRENCY = 20; // Meshy allows up to 20 parallel preview tasks
 
 // Cache-aware entry point. An identical request — same prompt + amendRounds — is
 // served from the on-disk response cache: the first run is live (minutes), every

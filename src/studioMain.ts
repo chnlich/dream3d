@@ -13,7 +13,7 @@
 import { SceneViewer } from "./viewer/SceneViewer";
 import type { GenerateRequest, JobStartResponse, JobStatus, LogLine, Pass } from "./api/contract";
 import type { SceneState } from "./scene/schema";
-import { deriveStages, type Stage } from "./studio/deriveStages";
+import { deriveStages, type Stage, type StageState } from "./studio/deriveStages";
 import scenePresetsJson from "../config/scene-presets.json";
 
 // Committed preset prompts (config/scene-presets.json), surfaced as the "Preset" dropdown. Typed
@@ -113,6 +113,20 @@ let progressState: ProgressState | null = null;
 // completion the row snaps to the accurate server endedAtMs - startedAtMs.
 const runningAnchors = new Map<string, number>();
 
+// Mounted stage rows, keyed by stage id. The per-tick render reconciles this map in place
+// (upsert + drop) instead of rebuilding the list, so the animated spinner <span> of a
+// running stage is created once and lives until that stage changes state. Recreating it
+// every tick — the old replaceChildren path — restarted the CSS animation from 0° and
+// made the icon flicker instead of spinning smoothly.
+interface StageRow {
+  li: HTMLLIElement;
+  iconEl: HTMLSpanElement;
+  nameEl: HTMLSpanElement;
+  timeEl: HTMLSpanElement;
+  state: StageState | null;
+}
+const stageRows = new Map<string, StageRow>();
+
 function formatDuration(seconds: number): string {
   if (seconds < 1) return `${seconds.toFixed(1)}s`;
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -157,6 +171,7 @@ function startProgress(jobId: string, amendRounds: number): void {
   progressPanel.hidden = false;
   cachedBadge.hidden = true;
   stageListEl.replaceChildren();
+  stageRows.clear();
   updateProgressDisplay();
 }
 
@@ -208,39 +223,75 @@ function updateProgressDisplay(): void {
   progressFill.classList.toggle("cached", state.cached && !state.error);
   cachedBadge.hidden = !state.cached;
 
-  // One unified list, one row per stage: icon + name + time. Every stage — assets, plan, layout,
-  // render, fix alike — gets the same treatment; several assets spin concurrently.
-  stageListEl.replaceChildren();
+  // Reconcile the stage list in place, keyed by stage id: upsert each row and rewrite
+  // only its changed fields — never rebuild a row that already exists. This keeps the
+  // animated spinner <span> of a running stage alive across ticks (the old
+  // replaceChildren-every-tick path recreated it each tick, restarting the CSS animation
+  // from 0° and making the icon flicker). Several assets spin concurrently; every stage
+  // kind — plan/assets/layout/render/fix/done alike — gets the same treatment.
+  const seen = new Set<string>();
+  let ref: Element | null = null;
   for (const s of stages) {
-    const li = document.createElement("li");
-    li.className = `stage-row stage-state-${s.state}`;
-
-    const icon = document.createElement("span");
-    icon.className = "stage-icon";
-    if (s.state === "running") {
-      icon.classList.add("spinner");
-    } else if (s.state === "done") {
-      icon.classList.add("done");
-      icon.textContent = "✓";
-    } else if (s.state === "failed") {
-      icon.classList.add("failed");
-      icon.textContent = "✕";
-    } else {
-      icon.classList.add("pending");
-      icon.textContent = "·";
+    seen.add(s.id);
+    let row: StageRow | undefined = stageRows.get(s.id);
+    if (!row) {
+      const li = document.createElement("li");
+      const iconEl = document.createElement("span");
+      iconEl.className = "stage-icon";
+      const nameEl = document.createElement("span");
+      nameEl.className = "stage-name";
+      const timeEl = document.createElement("span");
+      timeEl.className = "stage-time";
+      li.append(iconEl, nameEl, timeEl);
+      row = { li, iconEl, nameEl, timeEl, state: null };
+      stageRows.set(s.id, row);
     }
 
-    const name = document.createElement("span");
-    name.className = "stage-name";
-    name.textContent = s.name;
-    name.title = s.name;
+    // Keep DOM order matching stage order, but only move a row when it is actually out of
+    // place — a running spinner already in position is never disturbed.
+    const expectedPos: Element | null = ref ? ref.nextElementSibling : stageListEl.firstElementChild;
+    if (expectedPos !== row.li) {
+      stageListEl.insertBefore(row.li, expectedPos);
+    }
+    ref = row.li;
 
-    const time = document.createElement("span");
-    time.className = "stage-time";
-    time.textContent = formatStageTime(s, now);
+    // A state transition is the only time the row's class or icon changes; while a stage
+    // stays running its .spinner <span> is left entirely alone so its animation runs on.
+    if (row.state !== s.state) {
+      row.state = s.state;
+      row.li.className = `stage-row stage-state-${s.state}`;
+      row.iconEl.className = "stage-icon";
+      if (s.state === "running") {
+        row.iconEl.classList.add("spinner");
+        row.iconEl.textContent = "";
+      } else if (s.state === "done") {
+        row.iconEl.classList.add("done");
+        row.iconEl.textContent = "✓";
+      } else if (s.state === "failed") {
+        row.iconEl.classList.add("failed");
+        row.iconEl.textContent = "✕";
+      } else {
+        row.iconEl.classList.add("pending");
+        row.iconEl.textContent = "·";
+      }
+    }
 
-    li.append(icon, name, time);
-    stageListEl.append(li);
+    // An asset's name gains its label once "Starting asset i/N: label" arrives.
+    if (row.nameEl.textContent !== s.name) {
+      row.nameEl.textContent = s.name;
+      row.nameEl.title = s.name;
+    }
+
+    row.timeEl.textContent = formatStageTime(s, now);
+  }
+
+  // Drop rows whose id is no longer present (e.g. clean drops the round's fix row, or a
+  // cache-hit collapses to one row).
+  for (const [id, row] of stageRows) {
+    if (!seen.has(id)) {
+      row.li.remove();
+      stageRows.delete(id);
+    }
   }
 }
 

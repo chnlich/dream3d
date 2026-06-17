@@ -8,6 +8,7 @@ Phase 0.5; it does not call Meshy or Claude.
 ```bash
 cd backend
 uv sync
+uv run playwright install chromium
 ```
 
 ## Run the backend

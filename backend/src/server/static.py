@@ -4,6 +4,7 @@
 - A placeholder /static/ route is reserved for future production build serving.
 """
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -17,10 +18,17 @@ router = APIRouter()
 @router.get("/assets/{path:path}")
 async def serve_asset(path: str) -> FileResponse:
     """Serve a static asset from the dream3d assets cache."""
-    file_path = (assets_dir / path).resolve()
-    # Guard against path traversal outside the assets directory.
-    if not str(file_path).startswith(str(assets_dir.resolve())):
+    # Validate the client-supplied path lexically: os.path.normpath collapses
+    # '..'/'.' WITHOUT following the final symlink (unlike Path.resolve()).
+    # assets/<id>.glb is a symlink into the meshy cache (outside assets_dir);
+    # resolving it would follow it out and falsely trip the traversal guard.
+    # The guard blocks malicious URLs like /assets/../../etc/passwd, not the
+    # backend's own symlinks; FileResponse then serves the symlink transparently.
+    base = os.path.normpath(assets_dir)
+    target = os.path.normpath(os.path.join(base, path))
+    if target != base and not target.startswith(base + os.sep):
         raise HTTPException(status_code=403, detail="forbidden")
+    file_path = Path(target)
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="asset not found")
     return FileResponse(

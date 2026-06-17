@@ -96,7 +96,6 @@ export class SceneViewer {
 
   async loadScene(scene: SceneState): Promise<void> {
     this.clearContent();
-
     const root = new THREE.Group();
     root.name = "sceneContent";
     addLights(root);
@@ -121,6 +120,15 @@ export class SceneViewer {
     this.scene.add(root);
     this.contentRoot = root;
     this.frameScene(scene.room, scene.objects.length > 0 ? contentBox : null);
+    this.requestRender();
+  }
+
+  // Empty the viewer immediately. clearContent() disposes the whole contentRoot (room,
+  // floor, lights, objects) so the cleared state is the dark empty scene (background + IBL
+  // only) — the intended "cleared" look; do not re-add a room here. The viewer renders on
+  // demand, so an explicit frame is required for the canvas to visibly empty.
+  clear(): void {
+    this.clearContent();
     this.requestRender();
   }
 

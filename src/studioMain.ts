@@ -1,7 +1,9 @@
 // Studio page: prompt -> POST /api/generate (starts a job) -> poll GET /api/generate/<jobId>,
 // streaming a live progress log into the panel, then render each returned pass in the SceneViewer
-// with a Prev/Next stepper. Frontend wiring over the existing pipeline + viewer; no SceneViewer
-// changes. `three` is pulled in only transitively via SceneViewer.
+// with a Prev/Next stepper. The progress panel is driven by a PURE stage reducer
+// (src/studio/deriveStages.ts) recomputed from the full job log on every poll — one unified list
+// of plan/assets/layout/amend/done rows, each with a spinner while active, a ✓ when done, and its
+// real measured duration. `three` is pulled in only transitively via SceneViewer.
 //
 // Failure policy (matches the repo's fail-fast principle): network / non-2xx / malformed-shape errors
 // are surfaced loudly in the status line and console — never swallowed. The single tolerated-and-
@@ -11,6 +13,7 @@
 import { SceneViewer } from "./viewer/SceneViewer";
 import type { GenerateRequest, JobStartResponse, JobStatus, LogLine, Pass } from "./api/contract";
 import type { SceneState } from "./scene/schema";
+import { deriveStages, type Stage } from "./studio/deriveStages";
 import scenePresetsJson from "../config/scene-presets.json";
 
 // Committed preset prompts (config/scene-presets.json), surfaced as the "Preset" dropdown. Typed
@@ -46,8 +49,10 @@ function resolveSceneStateAssets(scene: SceneState): SceneState {
   return scene;
 }
 
-// Poll cadence for the generate job's progress (a real run is minute-scale).
+// Poll cadence for the generate job's progress (a real run is minute-scale). The render interval is
+// finer so the running row's live timer ticks smoothly.
 const POLL_INTERVAL_MS = 1000;
+const RENDER_TICK_MS = 250;
 
 // Resolve a required element by id, throwing loudly if it is missing or the wrong tag (fail fast — a
 // missing node means studio.html and this module drifted out of sync).
@@ -77,346 +82,165 @@ const runIdEl = requireEl("run-id", HTMLElement);
 const copyRunIdBtn = requireEl("copy-run-id", HTMLButtonElement);
 const progressFill = requireEl("progress-fill", HTMLElement);
 const elapsedEl = requireEl("elapsed", HTMLElement);
-const estimatedTotalEl = requireEl("estimated-total", HTMLElement);
-const stepListEl = requireEl("step-list", HTMLElement);
+const stageListEl = requireEl("stage-list", HTMLElement);
 const cachedBadge = requireEl("cached-badge", HTMLElement);
-const assetProgressEl = requireEl("asset-progress", HTMLElement);
-const assetListEl = requireEl("asset-list", HTMLElement);
 
 const viewer = new SceneViewer(canvas);
 
 let passes: Pass[] = [];
 let current = 0;
 
-// Progress panel state: tracks the Run ID, the list of pipeline steps, and the active step so the
-// right-hand panel can show a progress bar, elapsed/estimated time, and a cached/error badge.
-interface Step {
-  name: string;
-  estimatedSeconds: number;
-}
-
-type AssetRowState = "pending" | "running" | "done" | "failed";
-
-interface AssetRow {
-  index: number;
-  label: string | null;
-  state: AssetRowState;
-}
-
+// Progress panel state: holds the latest job snapshot so the stage reducer can recompute the full
+// stage list each render tick. The reducer (deriveStages) is pure and stateless; this just feeds it
+// the whole log + status, plus the cached/done/error flags for the progress bar + badges.
 interface ProgressState {
   jobId: string;
   amendRounds: number;
-  objectCount: number | null;
-  steps: Step[];
-  currentStepIndex: number;
-  lastAdvanceAt: number;
   startedAt: number;
-  elapsedInterval: number | null;
+  renderInterval: number | null;
   cached: boolean;
   done: boolean;
   error: boolean;
-  assetRows: AssetRow[];
+  log: LogLine[];
+  status: "running" | "done" | "error";
 }
 
 let progressState: ProgressState | null = null;
 
-function buildSteps(amendRounds: number, objectCount: number | null): Step[] {
-  const steps: Step[] = [{ name: "plan", estimatedSeconds: 25 }];
-  const count = objectCount ?? 1;
-  for (let i = 0; i < count; i++) {
-    steps.push({ name: `asset ${i + 1}`, estimatedSeconds: 30 });
-  }
-  steps.push({ name: "layout", estimatedSeconds: 1 });
-  for (let r = 1; r <= amendRounds; r++) {
-    steps.push({ name: `render ${r}`, estimatedSeconds: 20 });
-    steps.push({ name: `critique ${r}`, estimatedSeconds: 45 });
-    steps.push({ name: `fix ${r}`, estimatedSeconds: 1 });
-  }
-  steps.push({ name: "done", estimatedSeconds: 0 });
-  return steps;
-}
-
-function estimatedTotalSeconds(steps: Step[]): number {
-  return steps.reduce((sum, step) => sum + step.estimatedSeconds, 0);
-}
+// Clock-skew-safe anchors for the running rows' live timers. Keyed by stage id, valued with the
+// CLIENT Date.now() observed when the row first became running (kept across re-derivations). This
+// avoids subtracting server startedAtMs from client Date.now() (which breaks under clock skew); on
+// completion the row snaps to the accurate server endedAtMs - startedAtMs.
+const runningAnchors = new Map<string, number>();
 
 function formatDuration(seconds: number): string {
+  if (seconds < 1) return `${seconds.toFixed(1)}s`;
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
 }
 
+// The terminal done/cached rows show only their ✓ — no timer. Done rows show the real server
+// span; running rows tick from their client anchor; pending rows show the ~estimate.
+function formatStageTime(s: Stage, now: number): string {
+  if (s.id === "done" || s.id === "cached") return "";
+  if (s.state === "done" && s.startedAtMs !== null && s.endedAtMs !== null) {
+    return formatDuration((s.endedAtMs - s.startedAtMs) / 1000);
+  }
+  if (s.state === "running") {
+    const anchor = runningAnchors.get(s.id);
+    if (anchor !== undefined) return formatDuration((now - anchor) / 1000);
+    return "";
+  }
+  if (s.state === "failed" && s.startedAtMs !== null && s.endedAtMs !== null) {
+    return formatDuration((s.endedAtMs - s.startedAtMs) / 1000);
+  }
+  if (s.state === "failed") return "";
+  return s.estimatedSeconds > 0 ? `~${s.estimatedSeconds}s` : "";
+}
+
 function startProgress(jobId: string, amendRounds: number): void {
   progressState = {
     jobId,
     amendRounds,
-    objectCount: null,
-    steps: buildSteps(amendRounds, null),
-    currentStepIndex: 0,
-    lastAdvanceAt: Date.now(),
     startedAt: Date.now(),
-    elapsedInterval: window.setInterval(updateProgressDisplay, 250),
+    renderInterval: window.setInterval(updateProgressDisplay, RENDER_TICK_MS),
     cached: false,
     done: false,
     error: false,
-    assetRows: [],
+    log: [],
+    status: "running",
   };
+  runningAnchors.clear();
   runIdEl.textContent = jobId;
   progressPanel.hidden = false;
   cachedBadge.hidden = true;
+  stageListEl.replaceChildren();
   updateProgressDisplay();
 }
 
 function stopProgress(): void {
-  if (progressState?.elapsedInterval) {
-    window.clearInterval(progressState.elapsedInterval);
-    progressState.elapsedInterval = null;
+  if (progressState?.renderInterval) {
+    window.clearInterval(progressState.renderInterval);
+    progressState.renderInterval = null;
   }
-}
-
-function advanceToStep(index: number): void {
-  if (!progressState) return;
-  progressState.currentStepIndex = Math.max(progressState.currentStepIndex, index);
-  progressState.lastAdvanceAt = Date.now();
-  updateProgressDisplay();
-}
-
-function applyProgressUpdate(update: ProgressUpdate): void {
-  if (!progressState) return;
-  if (update.objectCount !== undefined) {
-    progressState.objectCount = update.objectCount;
-    progressState.steps = buildSteps(progressState.amendRounds, update.objectCount);
-    initAssetRows(update.objectCount);
-  }
-  if (update.currentStepIndex !== undefined) {
-    advanceToStep(update.currentStepIndex);
-  } else if (update.objectCount !== undefined) {
-    updateProgressDisplay();
-  }
-  if (update.cached) progressState.cached = true;
-  if (update.done) progressState.done = true;
-  if (update.assetStart) {
-    setAssetRunning(update.assetStart.index, update.assetStart.label);
-  }
-  if (update.assetDone) {
-    setAssetDone(update.assetDone.completed - 1);
-  }
-}
-
-interface ProgressUpdate {
-  objectCount?: number;
-  currentStepIndex?: number;
-  cached?: boolean;
-  done?: boolean;
-  assetStart?: { index: number; total: number; label: string };
-  assetDone?: { completed: number; total: number; label: string };
-}
-
-function initAssetRows(count: number): void {
-  if (!progressState) return;
-  progressState.assetRows = Array.from({ length: count }, (_, index) => ({
-    index,
-    label: null,
-    state: "pending",
-  }));
-  renderAssetProgress();
-}
-
-function setAssetRunning(index: number, label: string): void {
-  if (!progressState) return;
-  const row = progressState.assetRows[index];
-  if (!row) return;
-  row.label = label;
-  row.state = "running";
-  renderAssetProgress();
-}
-
-function setAssetDone(index: number): void {
-  if (!progressState) return;
-  const row = progressState.assetRows[index];
-  if (!row) return;
-  row.state = "done";
-  renderAssetProgress();
-}
-
-function markIncompleteAssetsFailed(): void {
-  if (!progressState) return;
-  let changed = false;
-  for (const row of progressState.assetRows) {
-    if (row.state !== "done" && row.state !== "failed") {
-      row.state = "failed";
-      changed = true;
-    }
-  }
-  if (changed) renderAssetProgress();
-}
-
-function assetStatusText(state: AssetRowState): string {
-  switch (state) {
-    case "pending":
-      return "waiting…";
-    case "running":
-      return "running…";
-    case "done":
-      return "done";
-    case "failed":
-      return "failed";
-  }
-}
-
-function renderAssetProgress(): void {
-  if (!progressState || progressState.assetRows.length === 0) {
-    assetProgressEl.hidden = true;
-    return;
-  }
-  assetProgressEl.hidden = false;
-  assetListEl.replaceChildren();
-  for (const row of progressState.assetRows) {
-    const li = document.createElement("li");
-    li.className = "asset-row";
-
-    const icon = document.createElement("span");
-    icon.className = `asset-icon asset-state-${row.state}`;
-    if (row.state === "pending" || row.state === "running") {
-      icon.classList.add("spinner");
-    } else if (row.state === "done") {
-      icon.textContent = "✓";
-    } else if (row.state === "failed") {
-      icon.textContent = "✕";
-    }
-
-    const label = document.createElement("span");
-    label.className = "asset-label";
-    label.textContent = row.label ?? "—";
-    label.title = row.label ?? "";
-
-    const status = document.createElement("span");
-    status.className = `asset-status asset-state-${row.state}`;
-    status.textContent = assetStatusText(row.state);
-
-    li.append(icon, label, status);
-    assetListEl.append(li);
-  }
-}
-
-function parseLogLine(line: string): ProgressUpdate | null {
-  if (!progressState) return null;
-
-  const planDone = line.match(/Plan ready — (\d+) object\(s\)/);
-  if (planDone) {
-    return { objectCount: parseInt(planDone[1], 10), currentStepIndex: 1 };
-  }
-
-  const assetStartMatch = line.match(/^Starting asset (\d+)\/(\d+): (.*)$/);
-  if (assetStartMatch) {
-    const index = parseInt(assetStartMatch[1], 10) - 1;
-    const total = parseInt(assetStartMatch[2], 10);
-    const label = assetStartMatch[3].trim();
-    return { assetStart: { index, total, label } };
-  }
-
-  const assetDone = line.match(/^Generating asset (\d+)\/(\d+): (.*)$/);
-  if (assetDone) {
-    const completed = parseInt(assetDone[1], 10);
-    const total = parseInt(assetDone[2], 10);
-    const label = assetDone[3].trim();
-    return { currentStepIndex: 1 + completed, assetDone: { completed, total, label } };
-  }
-
-  if (line === "Arranging layout…") {
-    const layoutIndex = 1 + (progressState.objectCount ?? 1);
-    return { currentStepIndex: layoutIndex + 1 };
-  }
-
-  const renderMatch = line.match(/Amend (\d+): rendering/);
-  if (renderMatch) {
-    const round = parseInt(renderMatch[1], 10);
-    const layoutIndex = 1 + (progressState.objectCount ?? 1);
-    return { currentStepIndex: layoutIndex + 1 + (round - 1) * 3 };
-  }
-
-  const critiqueMatch = line.match(/Amend (\d+): (\d+) issue\(s\) found/);
-  if (critiqueMatch) {
-    const round = parseInt(critiqueMatch[1], 10);
-    const layoutIndex = 1 + (progressState.objectCount ?? 1);
-    return { currentStepIndex: layoutIndex + 2 + (round - 1) * 3 };
-  }
-
-  const fixMatch = line.match(/Amend (\d+): applied fixes/);
-  if (fixMatch) {
-    const round = parseInt(fixMatch[1], 10);
-    const layoutIndex = 1 + (progressState.objectCount ?? 1);
-    return { currentStepIndex: layoutIndex + 3 + (round - 1) * 3 };
-  }
-
-  const cleanMatch = line.match(/Amend (\d+): clean/);
-  if (cleanMatch) {
-    return { done: true };
-  }
-
-  if (line.match(/Done — \d+ pass\(es\)/)) {
-    return { done: true };
-  }
-
-  if (line.includes("served from cache")) {
-    return { cached: true, done: true };
-  }
-
-  return null;
 }
 
 function updateProgressDisplay(): void {
   if (!progressState) return;
   const state = progressState;
   const now = Date.now();
-  const elapsedMs = now - state.startedAt;
-  elapsedEl.textContent = `Elapsed: ${formatDuration(elapsedMs / 1000)}`;
+  elapsedEl.textContent = `Elapsed: ${formatDuration((now - state.startedAt) / 1000)}`;
 
-  if (state.objectCount !== null) {
-    const totalEst = estimatedTotalSeconds(state.steps);
-    estimatedTotalEl.hidden = false;
-    estimatedTotalEl.textContent = `Estimated total: ${formatDuration(totalEst)}`;
-  } else {
-    estimatedTotalEl.hidden = true;
+  const stages = deriveStages(state.log, state.amendRounds, state.status);
+
+  // Maintain client anchors for running rows (set once per stage; dropped when it leaves running
+  // or is no longer in the list — e.g. fix[r] dropped by a clean round).
+  const currentIds = new Set(stages.map((s) => s.id));
+  for (const id of [...runningAnchors.keys()]) {
+    if (!currentIds.has(id)) runningAnchors.delete(id);
+  }
+  for (const s of stages) {
+    if (s.state === "running") {
+      if (!runningAnchors.has(s.id)) runningAnchors.set(s.id, now);
+    } else if (runningAnchors.has(s.id)) {
+      runningAnchors.delete(s.id);
+    }
   }
 
-  const totalUnits = state.steps.length;
-  const completedUnits = Math.min(state.currentStepIndex, totalUnits - 1);
-  const currentStep = state.steps[state.currentStepIndex];
-
-  let withinCurrent = 0;
-  if (currentStep && currentStep.estimatedSeconds > 0 && !state.done && !state.error) {
-    const elapsedInStepMs = now - state.lastAdvanceAt;
-    withinCurrent = Math.min(elapsedInStepMs / (currentStep.estimatedSeconds * 1000), 1);
+  // Progress bar: completed stages + a partial for each running stage from its client anchor.
+  let units = 0;
+  for (const s of stages) {
+    if (s.state === "done" || s.state === "failed") {
+      units += 1;
+    } else if (s.state === "running") {
+      const anchor = runningAnchors.get(s.id);
+      if (anchor !== undefined && s.estimatedSeconds > 0) {
+        units += Math.min((now - anchor) / 1000 / s.estimatedSeconds, 1);
+      }
+    }
   }
-
-  let fraction = (completedUnits + withinCurrent) / totalUnits;
+  let fraction = stages.length > 0 ? units / stages.length : 0;
   if (state.done || state.cached) fraction = 1;
-
-  progressFill.style.width = `${fraction * 100}%`;
+  progressFill.style.width = `${Math.min(fraction, 1) * 100}%`;
   progressFill.classList.toggle("error", state.error);
   progressFill.classList.toggle("cached", state.cached && !state.error);
   cachedBadge.hidden = !state.cached;
 
-  stepListEl.replaceChildren();
-  for (let i = 0; i < state.steps.length; i++) {
-    const step = state.steps[i];
+  // One unified list, one row per stage: icon + name + time. Every stage — assets, plan, layout,
+  // render, fix alike — gets the same treatment; several assets spin concurrently.
+  stageListEl.replaceChildren();
+  for (const s of stages) {
     const li = document.createElement("li");
-    const name = document.createElement("span");
-    name.textContent = step.name;
-    const time = document.createElement("span");
-    time.textContent = step.estimatedSeconds > 0 ? `~${step.estimatedSeconds}s` : "";
-    li.append(name, time);
+    li.className = `stage-row stage-state-${s.state}`;
 
-    if (state.error && i === state.currentStepIndex) {
-      li.classList.add("error");
-    } else if (i < state.currentStepIndex || state.done || state.cached) {
-      li.classList.add("done");
-    } else if (i === state.currentStepIndex) {
-      li.classList.add("current");
+    const icon = document.createElement("span");
+    icon.className = "stage-icon";
+    if (s.state === "running") {
+      icon.classList.add("spinner");
+    } else if (s.state === "done") {
+      icon.classList.add("done");
+      icon.textContent = "✓";
+    } else if (s.state === "failed") {
+      icon.classList.add("failed");
+      icon.textContent = "✕";
+    } else {
+      icon.classList.add("pending");
+      icon.textContent = "·";
     }
-    stepListEl.append(li);
+
+    const name = document.createElement("span");
+    name.className = "stage-name";
+    name.textContent = s.name;
+    name.title = s.name;
+
+    const time = document.createElement("span");
+    time.className = "stage-time";
+    time.textContent = formatStageTime(s, now);
+
+    li.append(icon, name, time);
+    stageListEl.append(li);
   }
 }
 
@@ -432,6 +256,14 @@ function showBanner(text: string): void {
 function clearBanner(): void {
   bannerEl.textContent = "";
   bannerEl.hidden = true;
+}
+
+// Drive the Generate button's "Generating…" state: disabled + an always-visible inline spinner,
+// covering the plan phase and the brief cached-hit flash. Restored on done/error.
+function setGenerating(running: boolean): void {
+  generateBtn.disabled = running;
+  generateBtn.classList.toggle("loading", running);
+  generateBtn.textContent = running ? "Generating…" : "Generate";
 }
 
 // Resolve a preset's prompt by id, failing loud on an unknown id — that only happens if
@@ -581,7 +413,7 @@ function failGenerate(err: unknown): void {
   setStatus(`Error: ${message}`);
   appendLogText(`Error: ${message}`);
   console.error("[studio] generate failed:", err);
-  generateBtn.disabled = false;
+  setGenerating(false);
 }
 
 async function onGenerate(): Promise<void> {
@@ -591,10 +423,21 @@ async function onGenerate(): Promise<void> {
   promptInput.value = prompt;
   addToHistory(prompt);
   rebuildPromptOptions();
-  generateBtn.disabled = true;
+  setGenerating(true);
   setStatus("Generating…");
   clearBanner();
   logEl.replaceChildren();
+
+  // Clear the previous 3D scene + pass UI immediately so Generate starts from a clean canvas — the old
+  // scene and its metadata vanish the instant Generate is clicked.
+  viewer.clear();
+  passes = [];
+  current = 0;
+  stepperEl.hidden = true;
+  prevBtn.disabled = true;
+  nextBtn.disabled = true;
+  passLabel.textContent = "";
+  objectList.replaceChildren();
 
   let jobId: string;
   try {
@@ -624,7 +467,8 @@ async function onGenerate(): Promise<void> {
   }
 
   // Poll the job on a RECURSIVE setTimeout (never setInterval, so a slow poll never overlaps the
-  // next). Each tick appends only the new log lines, tracked via `shown`.
+  // next). Each tick stores the full job snapshot (deriveStages recomputes the stages from it) and
+  // appends only the new log lines to #log, tracked via `shown`.
   let shown = 0;
   const poll = async (): Promise<void> => {
     try {
@@ -633,22 +477,16 @@ async function onGenerate(): Promise<void> {
         throw new Error(`/api/generate/${jobId} ${res.status}: ${await res.text()}`);
       }
       const status = (await res.json()) as JobStatus;
-      const previouslyShown = shown;
-      shown = appendLogLines(status.log, shown);
-
-      for (let i = previouslyShown; i < status.log.length; i++) {
-        const update = parseLogLine(status.log[i].text);
-        if (update) applyProgressUpdate(update);
+      if (progressState) {
+        progressState.log = status.log;
+        progressState.status = status.status;
+        if (status.cached) progressState.cached = true;
       }
-      if (status.cached) applyProgressUpdate({ cached: true, done: true });
+      shown = appendLogLines(status.log, shown);
+      updateProgressDisplay();
+
       if (status.status === "error") {
-        if (progressState) {
-          progressState.error = true;
-          const assetPhaseEnd = 1 + (progressState.objectCount ?? 0);
-          if (progressState.currentStepIndex < assetPhaseEnd) {
-            markIncompleteAssetsFailed();
-          }
-        }
+        if (progressState) progressState.error = true;
         stopProgress();
         updateProgressDisplay();
         failGenerate(new Error(status.error ?? "job failed with no error message"));
@@ -676,7 +514,7 @@ async function onGenerate(): Promise<void> {
       stepperEl.hidden = false;
       setStatus(`Done — ${passes.length} pass${passes.length === 1 ? "" : "es"} for “${prompt}”.`);
       await renderPass(0);
-      generateBtn.disabled = false;
+      setGenerating(false);
     } catch (err) {
       failGenerate(err);
     }

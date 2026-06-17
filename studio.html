@@ -255,103 +255,99 @@
         color: #52606d;
         margin-bottom: 8px;
       }
-      .step-list {
+      .stage-list {
         list-style: none;
         margin: 0;
         padding: 0;
         font-size: 12px;
       }
-      .step-list li {
-        display: flex;
-        justify-content: space-between;
-        padding: 3px 0;
-        color: #7b8794;
-      }
-      .step-list li.current {
-        color: #1f2933;
-        font-weight: 600;
-      }
-      .step-list li.done {
-        color: #2b8a3e;
-      }
-      .step-list li.error {
-        color: #c92a2a;
-      }
-      .badge-cached {
-        background: #d3f9d8;
-        color: #2b8a3e;
-      }
-      #asset-progress {
-        margin-top: 10px;
-      }
-      .asset-progress-title {
-        margin: 0 0 6px;
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #7b8794;
-      }
-      .asset-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        font-size: 12px;
-      }
-      .asset-row {
+      .stage-row {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 4px 0;
-        border-bottom: 1px solid #eef1f4;
+        padding: 3px 0;
+        color: #7b8794;
       }
-      .asset-row:last-child {
-        border-bottom: none;
+      .stage-row.stage-state-running {
+        color: #1f2933;
+        font-weight: 600;
       }
-      .asset-icon {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
+      .stage-row.stage-state-done {
+        color: #2b8a3e;
+      }
+      .stage-row.stage-state-failed {
+        color: #c92a2a;
+      }
+      .stage-icon {
+        flex: 0 0 14px;
+        width: 14px;
+        height: 14px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         border-radius: 50%;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 700;
+        line-height: 1;
       }
-      .asset-icon.spinner {
+      .stage-icon.spinner {
         border: 2px solid #e4e7eb;
         border-top-color: #2563eb;
-        animation: asset-spin 1s linear infinite;
+        animation: stage-spin 1s linear infinite;
       }
-      @keyframes asset-spin {
+      .stage-icon.pending {
+        color: #c7ccd1;
+      }
+      .stage-icon.done {
+        color: #2b8a3e;
+      }
+      .stage-icon.failed {
+        color: #c92a2a;
+      }
+      @keyframes stage-spin {
         to {
           transform: rotate(360deg);
         }
       }
-      .asset-state-done {
-        color: #2b8a3e;
-      }
-      .asset-state-failed {
-        color: #c92a2a;
-      }
-      .asset-label {
+      .stage-name {
         flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .asset-status {
+      .stage-time {
         flex: 0 0 auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 11px;
-        color: #7b8794;
+        color: #9aa5b1;
       }
-      .asset-status.asset-state-done {
+      .stage-row.stage-state-running .stage-time {
+        color: #2563eb;
+      }
+      .stage-row.stage-state-done .stage-time {
         color: #2b8a3e;
       }
-      .asset-status.asset-state-failed {
+      .stage-row.stage-state-failed .stage-time {
         color: #c92a2a;
+      }
+      .badge-cached {
+        background: #d3f9d8;
+        color: #2b8a3e;
+      }
+      /* Generate button "Generating…" cue: an always-visible inline spinner covering the
+         plan phase and the brief cached-hit flash. */
+      #generate.loading::before {
+        content: "";
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 6px;
+        border: 2px solid rgba(255, 255, 255, 0.4);
+        border-top-color: #ffffff;
+        border-radius: 50%;
+        animation: stage-spin 0.8s linear infinite;
+        vertical-align: -2px;
       }
     </style>
   </head>
@@ -384,13 +380,8 @@
           </div>
           <div class="progress-meta">
             <span id="elapsed">Elapsed: 0s</span>
-            <span id="estimated-total" hidden></span>
           </div>
-          <ul id="step-list" class="step-list"></ul>
-          <div id="asset-progress" hidden>
-            <h3 class="asset-progress-title">Assets</h3>
-            <ul id="asset-list" class="asset-list"></ul>
-          </div>
+          <ul id="stage-list" class="stage-list"></ul>
         </div>
         <div id="stepper" class="stepper" hidden>
           <button id="prev" disabled>Prev</button>

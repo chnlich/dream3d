@@ -1,6 +1,7 @@
 """Claude-backed scene planner for Dream3D."""
 
 import json
+import logging
 import math
 import re
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from llm.claude_cli import run_claude
 from pipeline.prompts import load
 from scene.schema import PlannedObject, Room, ScenePlan, Vec3
+
+LOGGER = logging.getLogger(__name__)
 
 MIN_OBJECTS = 1
 MAX_OBJECTS = 20
@@ -24,8 +27,12 @@ VEC3_SCHEMA = {
 SCENE_PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["room", "objects"],
+    "required": ["reasoning", "room", "objects"],
     "properties": {
+        "reasoning": {
+            "type": "string",
+            "description": "Think here first, before the objects, taking as much room as you need. Name the specific work, game, film, or famous scene this refers to (even when transliterated or localized), picture the scene worth depicting, and decide the objects that capture it — so each meshyPrompt below is a concrete single object that Meshy text-to-3D can actually build and stays true to this vision.",
+        },
         "room": {
             "type": "object",
             "additionalProperties": False,
@@ -114,6 +121,8 @@ async def plan(prompt: str) -> ScenePlan:
 
     text = run_claude(full_prompt, caller="planner")
     input_ = _as_record(_parse_json(text), "scene plan")
+    reasoning = input_.get("reasoning")
+    LOGGER.info("planner reasoning: %s", reasoning)
     room_raw = _as_record(input_.get("room"), "room")
     room = Room(
         width=_as_number(room_raw.get("width"), "room.width"),

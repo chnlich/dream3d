@@ -13,7 +13,7 @@ from log.audit import log_claude_call, new_id
 
 CLAUDE_BIN = "claude"
 MODEL = "claude-opus-4-8"
-TIMEOUT_SECONDS = 120
+TIMEOUT_SECONDS = 600
 MAX_BUFFER_BYTES = 32 * 1024 * 1024
 
 

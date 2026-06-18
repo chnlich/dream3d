@@ -9,8 +9,8 @@ from llm.claude_cli import run_claude
 from pipeline.prompts import load
 from scene.schema import PlannedObject, Room, ScenePlan, Vec3
 
-MIN_OBJECTS = 3
-MAX_OBJECTS = 6
+MIN_OBJECTS = 1
+MAX_OBJECTS = 20
 
 SYSTEM_PROMPT = load("planner_system.md").replace("{min_objects}", str(MIN_OBJECTS)).replace("{max_objects}", str(MAX_OBJECTS))
 
@@ -33,15 +33,15 @@ SCENE_PLAN_SCHEMA = {
             "properties": {
                 "width": {
                     "type": "number",
-                    "description": "interior size along X, meters",
+                    "description": "size along X, meters",
                 },
                 "depth": {
                     "type": "number",
-                    "description": "interior size along Z, meters",
+                    "description": "size along Z, meters",
                 },
                 "height": {
                     "type": "number",
-                    "description": "ceiling height along Y, meters",
+                    "description": "height along Y, meters",
                 },
             },
         },
@@ -49,7 +49,7 @@ SCENE_PLAN_SCHEMA = {
             "type": "array",
             "minItems": MIN_OBJECTS,
             "maxItems": MAX_OBJECTS,
-            "description": f"{MIN_OBJECTS} to {MAX_OBJECTS} objects placed in the room",
+            "description": f"up to {MAX_OBJECTS} objects placed in the scene",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -73,8 +73,8 @@ SCENE_PLAN_SCHEMA = {
                     "meshyPrompt": {
                         "type": "string",
                         "description": (
-                            "Single isolated object for text-to-3D: silhouette + material + archetype. "
-                            "No IP/brand names, no background, no other objects."
+                            "One self-contained object for text-to-3D: its form, material, and character — "
+                            "no surroundings or other objects."
                         ),
                     },
                     "approxSize": {

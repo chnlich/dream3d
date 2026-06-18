@@ -6,30 +6,13 @@ import re
 from typing import Any
 
 from llm.claude_cli import run_claude
+from pipeline.prompts import load
 from scene.schema import PlannedObject, Room, ScenePlan, Vec3
 
 MIN_OBJECTS = 3
 MAX_OBJECTS = 6
 
-SYSTEM_PROMPT = "\n".join(
-    [
-        "You are a 3D interior scene planner.",
-        "Given a short scene description, design one plausible room and the objects inside it,",
-        "then return them as a single JSON object matching the schema below.",
-        "",
-        "Rules:",
-        f"- Include between {MIN_OBJECTS} and {MAX_OBJECTS} distinct objects — the main furniture/props the description implies.",
-        "- Each meshyPrompt describes ONE isolated object for text-to-3D generation: give its",
-        "  silhouette, material, and archetype. No brand names or trademarked/IP characters, no",
-        "  background or setting, no other objects, no people — just the single object itself.",
-        "- approxSize is the object's bounding box [x, y, z] in meters; use realistic dimensions.",
-        "- The room origin is its center, on the floor. Floor is y = 0 and Y points up.",
-        "- position is each object's CENTER in world meters: keep it inside the room",
-        "  (x within ±width/2, z within ±depth/2) and rest it on the floor (y ≈ approxSize[1] / 2,",
-        "  or the appropriate mounting height). Do not overlap objects.",
-        "- rotationYDeg is the yaw in degrees; 0 faces +Z. Orient objects sensibly.",
-    ]
-)
+SYSTEM_PROMPT = load("planner_system.md").replace("{min_objects}", str(MIN_OBJECTS)).replace("{max_objects}", str(MAX_OBJECTS))
 
 VEC3_SCHEMA = {
     "type": "array",

@@ -76,19 +76,26 @@ def test_plan_strips_json_fence(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(result.objects) == 3
 
 
-@pytest.mark.parametrize("count", [2, 7])
+@pytest.mark.parametrize(
+    "count", [claude_planner.MIN_OBJECTS - 1, claude_planner.MAX_OBJECTS + 1]
+)
 def test_plan_object_count_out_of_range_raises(
     count: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _valid_payload()
-    payload["objects"] = (payload["objects"] * 3)[:count]
+    payload["objects"] = (payload["objects"] * (claude_planner.MAX_OBJECTS + 1))[
+        :count
+    ]
     for i, obj in enumerate(payload["objects"]):
         obj["id"] = f"obj-{i}"
     monkeypatch.setattr(
         claude_planner, "run_claude", lambda _prompt, *, caller: _json(payload)
     )
 
-    with pytest.raises(ValueError, match="expected 3-6 objects"):
+    with pytest.raises(
+        ValueError,
+        match=f"expected {claude_planner.MIN_OBJECTS}-{claude_planner.MAX_OBJECTS} objects",
+    ):
         asyncio.run(claude_planner.plan("cozy room"))
 
 

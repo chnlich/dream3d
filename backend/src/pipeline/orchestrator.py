@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import random
 from collections.abc import Callable
 from typing import Any
 
@@ -24,7 +25,8 @@ from render.headless import launch_browser
 from render.multiangle import capture_views
 from scene.schema import GenerateResponse, Pass, PlannedObject, SceneState
 
-ASSET_CONCURRENCY = 20
+ASSET_CONCURRENCY = 6
+SUBMIT_JITTER_S = 0.75
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -67,11 +69,16 @@ async def _run_pipeline(
 
     paths = await _generate_assets(plan.objects, on_event)
 
+    if all(path is None for path in paths):
+        raise RuntimeError(
+            f"all {len(paths)} assets failed to generate"
+        )
+
     scene = layout(plan)
     _emit(on_event, {"kind": "layout"})
     for index, obj in enumerate(scene.objects):
         obj.glb_url = paths[index]
-        obj.status = "ready"
+        obj.status = "ready" if paths[index] is not None else "failed"
 
     passes = [Pass(scene_state=scene.model_copy(deep=True))]
 
@@ -106,12 +113,12 @@ async def _run_pipeline(
 async def _generate_assets(
     objects: list[PlannedObject],
     on_event: ProgressCallback | None,
-) -> list[str]:
+) -> list[str | None]:
     semaphore = asyncio.Semaphore(ASSET_CONCURRENCY)
     total = len(objects)
     completed = 0
 
-    async def generate_one(index: int, obj: PlannedObject) -> str:
+    async def generate_one(index: int, obj: PlannedObject) -> str | None:
         nonlocal completed
         async with semaphore:
             _emit(
@@ -123,8 +130,22 @@ async def _generate_assets(
                     "label": obj.label,
                 },
             )
-            await asyncio.sleep(0)
-            path = await asset_provider.generate(obj)
+            await asyncio.sleep(random.uniform(0, SUBMIT_JITTER_S))
+            try:
+                path = await asset_provider.generate(obj)
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}".strip() or type(exc).__name__
+                _emit(
+                    on_event,
+                    {
+                        "kind": "asset_failed",
+                        "index": index,
+                        "total": total,
+                        "label": obj.label,
+                        "reason": reason,
+                    },
+                )
+                return None
             completed += 1
             _emit(
                 on_event,
@@ -139,7 +160,8 @@ async def _generate_assets(
             return path
 
     return await asyncio.gather(
-        *(generate_one(index, obj) for index, obj in enumerate(objects))
+        *(generate_one(index, obj) for index, obj in enumerate(objects)),
+        return_exceptions=True,
     )
 
 

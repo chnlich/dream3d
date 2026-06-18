@@ -200,6 +200,20 @@ export function deriveStages(
       continue;
     }
 
+    const assetFailed = text.match(/^Asset (\d+)\/(\d+) failed: /);
+    if (assetFailed) {
+      const index = parseInt(assetFailed[1], 10) - 1;
+      const stage = findStage(stages, `asset-${index}`);
+      // A partial failure marks only this asset row failed; keep its start ts and
+      // record the failure boundary. Already-resolved rows (done/failed) keep their
+      // state so a job that ends "done" can still carry some failed asset rows.
+      if (stage && stage.state !== "done" && stage.state !== "failed") {
+        stage.state = "failed";
+        if (stage.endedAtMs === null) stage.endedAtMs = ts;
+      }
+      continue;
+    }
+
     if (text === "Arranging layout…") {
       // Any still-running assets complete at this boundary.
       for (const s of stages) {

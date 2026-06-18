@@ -54,7 +54,7 @@ async def _run(
             store.persist(job_id, job)
         except Exception as exc:  # noqa: BLE001
             job.status = "error"
-            job.error = str(exc)
+            job.error = f"{type(exc).__name__}: {exc}"
             logger.error("job failed: %s", exc, exc_info=True)
             store.persist(job_id, job)
 
@@ -69,6 +69,8 @@ def format_event(ev: dict[str, Any]) -> str:
         return f"Starting asset {ev['index'] + 1}/{ev['total']}: {ev['label']}"
     if kind == "asset_done":
         return f"Generating asset {ev['completed']}/{ev['total']}: {ev['label']}"
+    if kind == "asset_failed":
+        return f"Asset {ev['index'] + 1}/{ev['total']} failed: {ev['label']} — {ev['reason']}"
     if kind == "layout":
         return "Arranging layout…"
     if kind == "render":

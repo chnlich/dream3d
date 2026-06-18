@@ -138,6 +138,8 @@ function formatEvent(ev: ProgressEvent): string {
       return `Starting asset ${ev.index + 1}/${ev.total}: ${ev.label}`;
     case "asset_done":
       return `Generating asset ${ev.completed}/${ev.total}: ${ev.label}`;
+    case "asset_failed":
+      return `Asset ${ev.index + 1}/${ev.total} failed: ${ev.label} — ${ev.reason}`;
     case "layout":
       return "Arranging layout…";
     case "render":

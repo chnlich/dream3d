@@ -6,13 +6,65 @@ Bearer header. Fails loud on HTTP errors, terminal task states, and timeouts.
 
 import asyncio
 import json
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
 
 MESHY_BASE_URL = "https://api.meshy.ai"
 TEXT_TO_3D_PATH = "/openapi/v2/text-to-3d"
+
+# Per-request timeout: 60s total, 10s to establish the TCP connection.
+HTTP_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+# Bounded retry for transient failures: connect errors / rate limiting / 5xx.
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_S = 1.5
+
+_RetryPolicy = Literal["submit", "idempotent"]
+
+
+async def _retry_http(
+    send: Callable[[], Awaitable[httpx.Response]],
+    *,
+    policy: _RetryPolicy,
+) -> httpx.Response:
+    """Run an HTTP request with bounded retry on transient failures.
+
+    Dispatch is explicit by error class:
+      * Connect-phase failures (ConnectError / ConnectTimeout -- the request never
+        reached the server) are retried for BOTH policies.
+      * Other TransportError (e.g. ReadTimeout / WriteTimeout -- the request may have
+        reached the server) is retried only for idempotent GETs; for `submit` it is
+        raised immediately, since re-POSTing a request that may already have been
+        received would create a DUPLICATE PAID generation (Meshy has no idempotency key).
+      * HTTP 429 is retried for both; 5xx is retried only for idempotent GETs.
+
+    ConnectError / ConnectTimeout are subclasses of TransportError, so the connect
+    clause is ordered first. After MAX_ATTEMPTS the failure is re-raised loudly.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = await send()
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            if attempt >= MAX_ATTEMPTS:
+                raise
+            await asyncio.sleep(RETRY_BACKOFF_S * attempt)
+            continue
+        except httpx.TransportError:
+            if policy == "submit" or attempt >= MAX_ATTEMPTS:
+                raise
+            await asyncio.sleep(RETRY_BACKOFF_S * attempt)
+            continue
+        status = response.status_code
+        retry_status = status == 429 or (
+            policy == "idempotent" and status >= 500
+        )
+        if retry_status and attempt < MAX_ATTEMPTS:
+            await asyncio.sleep(RETRY_BACKOFF_S * attempt)
+            continue
+        return response
+    raise RuntimeError("_retry_http exhausted without returning a response")
 
 
 def create_meshy_client(api_key: str) -> "MeshyClient":
@@ -81,11 +133,17 @@ class MeshyClient:
         )
 
     async def _submit_job(self, body: dict[str, Any]) -> str:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{MESHY_BASE_URL}{TEXT_TO_3D_PATH}",
-                headers={**self._auth_headers, "Content-Type": "application/json"},
-                json=body,
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await _retry_http(
+                lambda: client.post(
+                    f"{MESHY_BASE_URL}{TEXT_TO_3D_PATH}",
+                    headers={
+                        **self._auth_headers,
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                ),
+                policy="submit",
             )
         if response.status_code >= 400:
             raise RuntimeError(
@@ -102,8 +160,11 @@ class MeshyClient:
     async def poll_task(self, task_id: str) -> MeshyTask:
         """Poll the current state of a task."""
         url = f"{MESHY_BASE_URL}{TEXT_TO_3D_PATH}/{quote(task_id, safe='')}"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self._auth_headers)
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await _retry_http(
+                lambda: client.get(url, headers=self._auth_headers),
+                policy="idempotent",
+            )
         if response.status_code >= 400:
             raise RuntimeError(
                 f"Meshy poll failed: HTTP {response.status_code} {response.text}"
@@ -144,8 +205,11 @@ class MeshyClient:
 
     async def download_glb(self, url: str) -> bytes:
         """Download a GLB from a presigned URL without Authorization header."""
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await _retry_http(
+                lambda: client.get(url),
+                policy="idempotent",
+            )
         if response.status_code >= 400:
             raise RuntimeError(
                 f"Meshy GLB download failed: HTTP {response.status_code}"

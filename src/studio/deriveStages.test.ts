@@ -202,6 +202,38 @@ describe("deriveStages — error mid-asset fails the in-flight stage, rest pendi
   });
 });
 
+describe("deriveStages — partial asset failure keeps the failed row failed on done", () => {
+  // One asset emits asset_failed (the others asset_done); a job that ends "done"
+  // must keep the failed row failed rather than re-marking it done.
+  const log: LogLine[] = [
+    L(1000, "Planning scene…"),
+    L(2000, "Plan ready — 2 object(s)"),
+    L(3000, "Starting asset 1/2: chair"),
+    L(3100, "Starting asset 2/2: table"),
+    L(5000, "Asset 1/2 failed: chair — ReadTimeout: read timed out"),
+    L(6000, "Generating asset 1/2: table"),
+    L(6100, "Arranging layout…"),
+    L(6200, "Done — 1 pass(es)"),
+  ];
+  const stages = deriveStages(log, 0, "done");
+
+  it("keeps the failed asset failed while its sibling and the rest are done", () => {
+    const chair = byId(stages, "asset-0");
+    assert.equal(chair.name, "Asset 1: chair");
+    assert.equal(chair.state, "failed");
+    assert.equal(chair.startedAtMs, 3000);
+    assert.equal(chair.endedAtMs, 5000);
+
+    const table = byId(stages, "asset-1");
+    assert.equal(table.state, "done");
+    assert.equal(table.startedAtMs, 3100);
+    assert.equal(table.endedAtMs, 6000);
+
+    assert.equal(byId(stages, "layout").state, "done");
+    assert.equal(byId(stages, "done").state, "done");
+  });
+});
+
 describe("deriveStages — concurrent asset completion order", () => {
   // Assets start out of order and complete in a different order; the label on each
   // "Generating asset c/N: label" line pairs the completion to the right running row.

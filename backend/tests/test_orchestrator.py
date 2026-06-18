@@ -98,6 +98,7 @@ def _patch_common(
 ) -> dict[str, Any]:
     monkeypatch.setenv("DREAM3D_RESPONSE_CACHE", "0")
     monkeypatch.setenv("DREAM3D_PLAN_CACHE", "0")
+    monkeypatch.setattr(orchestrator, "SUBMIT_JITTER_S", 0)
 
     calls: dict[str, Any] = {
         "generated": [],
@@ -265,3 +266,81 @@ async def test_assets_are_generated_and_applied_in_input_order(
         "/tmp/obj-1.glb",
         "/tmp/obj-2.glb",
     ]
+
+
+@pytest.mark.asyncio
+async def test_one_asset_failing_is_isolated_and_marked_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing asset must not cancel its siblings: it is marked failed and the
+    pipeline continues, returning a partial scene (the job does NOT error)."""
+    monkeypatch.setenv("DREAM3D_RESPONSE_CACHE", "0")
+    monkeypatch.setenv("DREAM3D_PLAN_CACHE", "0")
+    monkeypatch.setattr(orchestrator, "SUBMIT_JITTER_S", 0)
+    plan = _plan(3)
+    events: list[dict[str, Any]] = []
+
+    async def fake_plan(_prompt: str) -> ScenePlan:
+        return plan
+
+    async def fake_asset(obj: PlannedObject) -> str:
+        if obj.id == "obj-1":
+            raise RuntimeError("meshy boom")
+        return f"/tmp/{obj.id}.glb"
+
+    browser = FakeBrowser()
+
+    async def fake_launch_browser() -> FakeBrowser:
+        return browser
+
+    monkeypatch.setattr(orchestrator.claude_planner, "plan", fake_plan)
+    monkeypatch.setattr(orchestrator.asset_provider, "generate", fake_asset)
+    monkeypatch.setattr(orchestrator, "launch_browser", fake_launch_browser)
+
+    result = await orchestrator.generate("arrange a studio", 0, events.append)
+
+    objs = result.passes[0].scene_state.objects
+    assert [(o.glb_url, o.status) for o in objs] == [
+        ("/tmp/obj-0.glb", "ready"),
+        (None, "failed"),
+        ("/tmp/obj-2.glb", "ready"),
+    ]
+    assert browser.closed is True
+
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("asset_failed") == 1
+    assert "layout" in kinds and "done" in kinds
+    failed = next(e for e in events if e["kind"] == "asset_failed")
+    assert failed["index"] == 1
+    assert failed["total"] == 3
+    assert failed["label"] == "object 1"
+    assert failed["reason"] == "RuntimeError: meshy boom"
+
+
+@pytest.mark.asyncio
+async def test_all_assets_failing_raises_with_visible_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If every asset fails, the pipeline must end as an error with a visible reason."""
+    monkeypatch.setenv("DREAM3D_RESPONSE_CACHE", "0")
+    monkeypatch.setenv("DREAM3D_PLAN_CACHE", "0")
+    monkeypatch.setattr(orchestrator, "SUBMIT_JITTER_S", 0)
+    plan = _plan(2)
+    events: list[dict[str, Any]] = []
+
+    async def fake_plan(_prompt: str) -> ScenePlan:
+        return plan
+
+    async def fake_asset(obj: PlannedObject) -> str:
+        raise RuntimeError(f"meshy boom for {obj.id}")
+
+    monkeypatch.setattr(orchestrator.claude_planner, "plan", fake_plan)
+    monkeypatch.setattr(orchestrator.asset_provider, "generate", fake_asset)
+
+    with pytest.raises(RuntimeError, match="all 2 assets failed to generate"):
+        await orchestrator.generate("arrange a studio", 0, events.append)
+
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("asset_failed") == 2
+    assert "layout" not in kinds
+    assert "done" not in kinds
